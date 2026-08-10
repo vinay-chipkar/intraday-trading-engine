@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import argparse
 
+from config.settings import settings
 from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.scanner.service import ScannerConfig, scan_top10
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rank the top intraday NSE candidates")
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--limit", type=int, default=settings.top_n)
     parser.add_argument("--lookback-days", type=int, default=20)
     parser.add_argument("--min-price", type=float, default=50.0)
     parser.add_argument("--min-avg-traded-value", type=float, default=50_000_000.0)
-    parser.add_argument("--news-lookback-hours", type=int, default=24)
+    parser.add_argument("--news-lookback-hours", type=int, default=settings.news_lookback_hours)
     args = parser.parse_args()
 
     rows = scan_top10(
