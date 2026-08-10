@@ -9,6 +9,7 @@ from intraday_engine.backtest.research import (
     FilterSpec,
     default_filter_specs,
     evaluate_filter,
+    prepare_research,
 )
 
 
@@ -77,10 +78,18 @@ def _evaluate_file(
     split_time = pd.Timestamp(bars.iloc[split_index]["timestamp"])
     train_bars = bars.iloc[:split_index].copy()
 
+    # Build the causal feature frame and production signals once. The previous
+    # implementation rebuilt both for every filter and every train/test split.
+    ordered, features, signals = prepare_research(
+        bars,
+        symbol=symbol,
+        min_score=min_score,
+    )
+
+    print(f"  {symbol}: prepared {len(ordered):,} bars, {len(signals):,} signals")
+
     rows: list[dict[str, object]] = []
     for spec in default_filter_specs():
-        # The production engine remains unchanged. This research layer only
-        # evaluates pre-declared entry filters against the existing signals.
         train_result = evaluate_filter(
             train_bars,
             symbol=symbol,
@@ -88,14 +97,18 @@ def _evaluate_file(
             min_score=min_score,
             max_holding_bars=max_holding_bars,
             end_time=split_time,
+            features=features,
+            signals=signals,
         )
         test_result = evaluate_filter(
-            bars,
+            ordered,
             symbol=symbol,
             spec=spec,
             min_score=min_score,
             max_holding_bars=max_holding_bars,
             start_time=split_time,
+            features=features,
+            signals=signals,
         )
         for side in ("LONG", "SHORT"):
             rows.append(_metric_row(symbol, side, spec, train_result, "train"))
