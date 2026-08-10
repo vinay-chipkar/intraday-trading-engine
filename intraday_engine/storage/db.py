@@ -163,6 +163,14 @@ MARKET_CONTEXT_COLUMNS = [
     "news_count", "high_impact_news_count", "score", "regime",
 ]
 
+FEATURE_SNAPSHOT_COLUMNS = [
+    "event_time", "trading_date", "symbol", "instrument_key", "timeframe",
+    "close", "volume", "relative_volume", "vwap", "rsi14", "ema9", "ema20",
+    "ema50", "ema200", "atr14", "support", "resistance", "distance_to_support_pct",
+    "distance_to_resistance_pct", "candle_pattern", "trend", "breakout", "breakdown",
+    "feature_score", "feature_json",
+]
+
 
 def conn():
     connection = duckdb.connect(settings.duckdb_path)
@@ -203,6 +211,22 @@ def insert_market_context(values: dict) -> None:
         connection.execute(
             "INSERT INTO market_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [values[column] for column in MARKET_CONTEXT_COLUMNS],
+        )
+    finally:
+        connection.close()
+
+
+def insert_feature_snapshot(values: dict) -> None:
+    """Persist one point-in-time feature vector for later research/ML labels."""
+    missing = set(FEATURE_SNAPSHOT_COLUMNS).difference(values)
+    if missing:
+        raise ValueError(f"Missing feature snapshot columns: {sorted(missing)}")
+    connection = conn()
+    try:
+        placeholders = ",".join("?" for _ in FEATURE_SNAPSHOT_COLUMNS)
+        connection.execute(
+            f"INSERT INTO feature_snapshots VALUES ({placeholders})",
+            [values[column] for column in FEATURE_SNAPSHOT_COLUMNS],
         )
     finally:
         connection.close()
