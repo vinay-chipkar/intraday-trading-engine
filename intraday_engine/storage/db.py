@@ -100,7 +100,10 @@ CREATE TABLE IF NOT EXISTS candidate_events(
     price_change_pct DOUBLE,
     vwap DOUBLE,
     candidate_score DOUBLE,
-    reason VARCHAR
+    reason VARCHAR,
+    news_score DOUBLE,
+    news_count INTEGER,
+    high_impact_news_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS feature_snapshots(
@@ -194,6 +197,9 @@ NEWS_COLUMNS = [
 def conn():
     connection = duckdb.connect(settings.duckdb_path)
     connection.execute(SCHEMA)
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_score DOUBLE")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_count INTEGER")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS high_impact_news_count INTEGER")
     return connection
 
 
