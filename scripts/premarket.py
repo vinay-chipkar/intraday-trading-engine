@@ -38,10 +38,10 @@ def main() -> None:
         client,
         instruments,
         now=now_utc,
-        lookback_hours=24,
+        lookback_hours=settings.news_lookback_hours,
     )
     inserted_news = insert_news([article.as_db_row(now_utc) for article in news_articles])
-    news_stats = latest_market_news_stats(lookback_hours=24)
+    news_stats = latest_market_news_stats(lookback_hours=settings.news_lookback_hours)
     values["news_count"] = news_stats["news_count"]
     values["high_impact_news_count"] = news_stats["high_impact_news_count"]
     values["news_sentiment_score"] = aggregate_news_sentiment(news_articles, now=now_utc)
