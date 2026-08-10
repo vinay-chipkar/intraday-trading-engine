@@ -65,7 +65,7 @@ def test_latest_pattern_names_is_deterministic():
         {"open": 102, "high": 103, "low": 99, "close": 100},
         {"open": 99, "high": 104, "low": 98, "close": 103},
     ])
-    assert latest_pattern_names(df) == ["bullish_engulfing"]
+    assert latest_pattern_names(df) == ["bullish_engulfing", "outside_bar"]
 
 
 def test_missing_ohlc_is_rejected():
@@ -80,7 +80,7 @@ def test_patterns_do_not_use_future_candles():
     ])
     with_future = pd.concat([
         first_two,
-        pd.DataFrame([{ "open": 103, "high": 104, "low": 102, "close": 102.5 }]),
+        pd.DataFrame([{"open": 103, "high": 104, "low": 102, "close": 102.5}]),
     ], ignore_index=True)
     base = add_candle_patterns(first_two)
     extended = add_candle_patterns(with_future)
