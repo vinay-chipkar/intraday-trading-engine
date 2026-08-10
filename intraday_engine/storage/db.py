@@ -156,6 +156,13 @@ CANDLE_COLUMNS = [
     "open", "high", "low", "close", "volume", "open_interest",
 ]
 
+MARKET_CONTEXT_COLUMNS = [
+    "captured_at", "trading_date", "gift_nifty_change_pct", "dow_change_pct",
+    "sp500_change_pct", "nasdaq_change_pct", "india_vix", "usd_inr", "brent",
+    "fii_flow", "dii_flow", "nifty_change_pct", "banknifty_change_pct",
+    "news_count", "high_impact_news_count", "score", "regime",
+]
+
 
 def conn():
     connection = duckdb.connect(settings.duckdb_path)
@@ -184,6 +191,20 @@ def upsert_instruments(df: pd.DataFrame) -> None:
         connection.execute("INSERT OR REPLACE INTO instrument_master SELECT * FROM incoming_df")
     finally:
         connection.unregister("incoming_df")
+        connection.close()
+
+
+def insert_market_context(values: dict) -> None:
+    missing = set(MARKET_CONTEXT_COLUMNS).difference(values)
+    if missing:
+        raise ValueError(f"Missing market context columns: {sorted(missing)}")
+    connection = conn()
+    try:
+        connection.execute(
+            "INSERT INTO market_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [values[column] for column in MARKET_CONTEXT_COLUMNS],
+        )
+    finally:
         connection.close()
 
 
@@ -237,12 +258,19 @@ def latest_candle_timestamp(instrument_key: str, interval: str = "1m"):
         connection.close()
 
 
-def latest_market_score():
+def latest_market_context() -> dict | None:
     connection = conn()
     try:
         row = connection.execute(
-            "SELECT score FROM market_context ORDER BY captured_at DESC LIMIT 1"
+            "SELECT * FROM market_context ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
-        return float(row[0]) if row else 0.0
+        if row is None:
+            return None
+        return dict(zip(MARKET_CONTEXT_COLUMNS, row))
     finally:
         connection.close()
+
+
+def latest_market_score():
+    context = latest_market_context()
+    return float(context["score"]) if context else 0.0
