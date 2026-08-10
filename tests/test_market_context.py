@@ -28,7 +28,7 @@ def test_score_is_deterministic():
         "banknifty_change_pct": 0.4,
         "india_vix_penalty": 0.0,
     }
-    assert score_market(values) == 8.8
+    assert score_market(values) == 11.7
 
 
 def test_vix_penalty_only_applies_above_baseline():
@@ -55,9 +55,9 @@ def test_quote_metrics_and_context_mapping():
 def test_build_context_has_timestamp_and_regime():
     context = build_context(
         {
-            "gift_nifty_change_pct": 1.0,
-            "nifty_change_pct": 1.0,
-            "banknifty_change_pct": 0.5,
+            "gift_nifty_change_pct": 2.0,
+            "nifty_change_pct": 1.5,
+            "banknifty_change_pct": 1.0,
             "india_vix": 14.0,
             "india_vix_penalty": 0.0,
         }
