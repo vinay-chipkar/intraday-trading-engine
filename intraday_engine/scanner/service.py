@@ -89,6 +89,16 @@ def _current_day_vwap(symbols: list[str], trading_date: date) -> pd.DataFrame:
         connection.close()
 
 
+def _instrument_rows() -> pd.DataFrame:
+    connection = conn()
+    try:
+        return connection.execute(
+            "SELECT symbol, instrument_key FROM instrument_master ORDER BY symbol"
+        ).df()
+    finally:
+        connection.close()
+
+
 def scan_top10(
     client: UpstoxREST,
     config: ScannerConfig | None = None,
@@ -100,32 +110,38 @@ def scan_top10(
     ranked research universe for the downstream technical/signal engine.
     """
     config = config or ScannerConfig()
-    instruments = conn().execute(
-        "SELECT symbol, instrument_key FROM instrument_master ORDER BY symbol"
-    ).df()
+    captured_at = datetime.now(IST)
+    trading_date = trading_date or captured_at.date()
+    instruments = _instrument_rows()
     if instruments.empty:
         return []
 
     keys = instruments["instrument_key"].dropna().astype(str).tolist()
     quotes = client.full_market_quotes(keys)
     metrics = client.quote_metrics(quotes)
-    trading_date = trading_date or datetime.now(IST).date()
-    liquidity = _historical_liquidity(instruments["symbol"].tolist(), trading_date, config.lookback_days)
-    vwap = _current_day_vwap(instruments["symbol"].tolist(), trading_date)
+    quote_by_instrument: dict[str, dict] = {}
+    metric_by_instrument: dict[str, dict] = {}
+    for quote_key, value in quotes.items():
+        if not isinstance(value, dict):
+            continue
+        instrument_key = value.get("instrument_token") or quote_key
+        quote_by_instrument[str(instrument_key)] = value
+        metric_by_instrument[str(instrument_key)] = metrics.get(quote_key, {})
+
+    symbols = instruments["symbol"].tolist()
+    liquidity = _historical_liquidity(symbols, trading_date, config.lookback_days)
+    vwap = _current_day_vwap(symbols, trading_date)
     liquidity_map = liquidity.set_index("symbol").to_dict("index") if not liquidity.empty else {}
     vwap_map = vwap.set_index("symbol")["vwap"].to_dict() if not vwap.empty else {}
     market_score = latest_market_score()
 
     rows: list[dict] = []
+    elapsed = _elapsed_minutes(captured_at)
     for _, instrument in instruments.iterrows():
         symbol = str(instrument["symbol"])
         key = str(instrument["instrument_key"])
-        raw = None
-        for quote_key, value in quotes.items():
-            if quote_key == key or (isinstance(value, dict) and value.get("instrument_token") == key):
-                raw = value
-                break
-        metric = metrics.get(next((qk for qk, value in quotes.items() if qk == key or (isinstance(value, dict) and value.get("instrument_token") == key)), ""), {})
+        raw = quote_by_instrument.get(key)
+        metric = metric_by_instrument.get(key, {})
         if not raw or not metric.get("ltp"):
             continue
 
@@ -152,7 +168,7 @@ def scan_top10(
                 "day_high": float(ohlc.get("high") or ltp),
                 "day_low": float(ohlc.get("low") or ltp),
                 "vwap": vwap_map.get(symbol),
-                "elapsed_session_minutes": _elapsed_minutes(datetime.now(IST)),
+                "elapsed_session_minutes": elapsed,
             }
         )
 
@@ -160,11 +176,10 @@ def scan_top10(
     if not ranked:
         return []
 
-    now = datetime.now(IST)
     candidate_df = pd.DataFrame(
         [
             {
-                "event_time": now,
+                "event_time": captured_at,
                 "trading_date": trading_date,
                 "symbol": row["symbol"],
                 "instrument_key": row["instrument_key"],
