@@ -10,7 +10,13 @@ from intraday_engine.backtest.pipeline import run_rule_backtest
 from intraday_engine.strategy.point_in_time import generate_signals
 
 
-def _run(path: Path, symbol: str, *, min_score: float, max_holding_bars: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _run(
+    path: Path,
+    symbol: str,
+    *,
+    min_score: float,
+    max_holding_bars: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     bars = pd.read_csv(path, parse_dates=["timestamp"])
     signals = generate_signals(bars, symbol=symbol, min_score=min_score)
     result = run_rule_backtest(
@@ -20,8 +26,8 @@ def _run(path: Path, symbol: str, *, min_score: float, max_holding_bars: int) ->
         max_holding_bars=max_holding_bars,
     )
     trades = trade_diagnostics(result, signals)
-    by_side, by_score, by_reason = summarize_diagnostics(trades)
-    return trades, by_side, by_score, by_reason
+    by_side, by_score, by_reason, by_excursion = summarize_diagnostics(trades)
+    return trades, by_side, by_score, by_reason, by_excursion
 
 
 def main() -> None:
@@ -56,9 +62,10 @@ def main() -> None:
     all_sides: list[pd.DataFrame] = []
     all_scores: list[pd.DataFrame] = []
     all_reasons: list[pd.DataFrame] = []
+    all_excursions: list[pd.DataFrame] = []
 
     for file, symbol in items:
-        trades, by_side, by_score, by_reason = _run(
+        trades, by_side, by_score, by_reason, by_excursion = _run(
             file,
             symbol,
             min_score=args.min_score,
@@ -68,6 +75,7 @@ def main() -> None:
         all_sides.append(by_side)
         all_scores.append(by_score)
         all_reasons.append(by_reason)
+        all_excursions.append(by_excursion)
 
         print(f"\n===== {symbol} =====")
         if by_side.empty:
@@ -76,8 +84,11 @@ def main() -> None:
             print("\nBy side:")
             print(by_side.to_string(index=False))
         if not by_score.empty:
-            print("\nBy score band:")
+            print("\nBy score magnitude and side:")
             print(by_score.to_string(index=False))
+        if not by_excursion.empty:
+            print("\nBy excursion:")
+            print(by_excursion.to_string(index=False))
         if not by_reason.empty:
             print("\nBy reason:")
             print(by_reason.to_string(index=False))
@@ -85,8 +96,11 @@ def main() -> None:
     pd.concat(all_trades, ignore_index=True).to_csv(output_dir / "trades.csv", index=False)
     pd.concat(all_sides, ignore_index=True).to_csv(output_dir / "by_side.csv", index=False)
     pd.concat(all_scores, ignore_index=True).to_csv(output_dir / "by_score.csv", index=False)
+    pd.concat(all_excursions, ignore_index=True).to_csv(output_dir / "by_excursion.csv", index=False)
     if any(not frame.empty for frame in all_reasons):
-        pd.concat([frame for frame in all_reasons if not frame.empty], ignore_index=True).to_csv(output_dir / "by_reason.csv", index=False)
+        pd.concat(
+            [frame for frame in all_reasons if not frame.empty], ignore_index=True
+        ).to_csv(output_dir / "by_reason.csv", index=False)
 
     print(f"\nReports written to {output_dir}")
 
