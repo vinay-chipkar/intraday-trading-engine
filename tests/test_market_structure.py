@@ -30,16 +30,16 @@ def test_pivot_is_only_exposed_after_confirmation():
 
 def test_higher_highs_and_higher_lows_create_bullish_structure():
     df = _frame(
-        [100, 105, 102, 110, 104, 115, 110],
-        [95, 98, 97, 100, 99, 105, 103],
-        [98, 103, 100, 108, 102, 112, 110],
+        [100, 102, 106, 104, 110, 108, 115, 112],
+        [95, 98, 96, 100, 98, 104, 101, 107],
+        [98, 101, 103, 102, 108, 106, 112, 110],
     )
     out = add_market_structure(df, pivot_left=1, pivot_right=1)
     latest = out.iloc[-1]
 
     assert latest["market_structure"] == "BULLISH"
     assert latest["structure_trend"] == "UPTREND"
-    assert latest["support"] == pytest.approx(105.0)
+    assert latest["support"] == pytest.approx(101.0)
     assert latest["resistance"] == pytest.approx(115.0)
 
 
@@ -61,10 +61,14 @@ def test_double_top_requires_separation_and_price_tolerance():
 
 
 def test_latest_market_structure_is_serializable():
-    df = _frame([100, 105, 102, 110, 104, 115, 110], [95, 98, 97, 100, 99, 105, 103])
+    df = _frame(
+        [100, 102, 106, 104, 110, 108, 115, 112],
+        [95, 98, 96, 100, 98, 104, 101, 107],
+        [98, 101, 103, 102, 108, 106, 112, 110],
+    )
     snapshot = latest_market_structure(df, pivot_left=1, pivot_right=1)
 
     assert snapshot["market_structure"] == "BULLISH"
     assert snapshot["structure_trend"] == "UPTREND"
-    assert snapshot["support"] == pytest.approx(105.0)
+    assert snapshot["support"] == pytest.approx(101.0)
     assert snapshot["resistance"] == pytest.approx(115.0)
