@@ -1,3 +1,5 @@
+import pytest
+
 from intraday_engine.signals.engine import SignalConfig, generate_signal
 
 
@@ -35,9 +37,9 @@ def test_bullish_setup_generates_buy_with_atr_risk_when_no_support_exists():
     signal = generate_signal(base_row(), market_score=8)
     assert signal.action == "BUY"
     assert signal.score >= 60
-    assert signal.stop_loss == 98.0
-    assert signal.target == 103.0
-    assert signal.reward_risk == 1.5
+    assert signal.stop_loss == pytest.approx(98.0)
+    assert signal.target == pytest.approx(103.0)
+    assert signal.reward_risk == pytest.approx(1.5)
 
 
 def test_structural_support_controls_long_stop_with_buffer():
@@ -46,9 +48,9 @@ def test_structural_support_controls_long_stop_with_buffer():
     signal = generate_signal(row, market_score=8)
 
     assert signal.action == "BUY"
-    assert signal.stop_loss == 95.8
-    assert signal.target == 106.3
-    assert signal.reward_risk == 1.5
+    assert signal.stop_loss == pytest.approx(95.8)
+    assert signal.target == pytest.approx(106.3)
+    assert signal.reward_risk == pytest.approx(1.5)
     assert "structural stop" in signal.reasons
 
 
@@ -81,8 +83,8 @@ def test_bearish_setup_generates_sell():
     })
     signal = generate_signal(row, market_score=-8)
     assert signal.action == "SELL"
-    assert signal.stop_loss == 102.0
-    assert signal.target == 97.0
+    assert signal.stop_loss == pytest.approx(102.0)
+    assert signal.target == pytest.approx(97.0)
 
 
 def test_structural_resistance_controls_short_stop_with_buffer():
@@ -106,8 +108,8 @@ def test_structural_resistance_controls_short_stop_with_buffer():
     })
     signal = generate_signal(row, market_score=-8)
     assert signal.action == "SELL"
-    assert signal.stop_loss == 104.2
-    assert signal.target == 93.7
+    assert signal.stop_loss == pytest.approx(104.2)
+    assert signal.target == pytest.approx(93.7)
 
 
 def test_weak_trend_blocks_trade_even_when_score_is_high():
