@@ -8,3 +8,4 @@ data/*.parquet
 logs/
 models/*.joblib
 *.log
+*.egg-info/
