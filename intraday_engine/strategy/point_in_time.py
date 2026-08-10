@@ -7,39 +7,25 @@ from intraday_engine.strategy.features import enrich
 
 
 def _confirmed_pivots(df: pd.DataFrame, left: int, right: int) -> tuple[pd.Series, pd.Series]:
-    """Return pivot values only when the confirming right-side bars exist."""
+    """Return pivot prices on the first bar where their confirmation exists."""
     if left < 1 or right < 1:
         raise ValueError("left and right must be >= 1")
-
-    high_candidate = df["high"].eq(
-        df["high"].rolling(left + right + 1, center=True).max()
-    )
-    low_candidate = df["low"].eq(
-        df["low"].rolling(left + right + 1, center=True).min()
-    )
-    return high_candidate.where(high_candidate).shift(right), low_candidate.where(low_candidate).shift(right)
+    high_candidate = df["high"].eq(df["high"].rolling(left + right + 1, center=True).max())
+    low_candidate = df["low"].eq(df["low"].rolling(left + right + 1, center=True).min())
+    return df["high"].where(high_candidate).shift(right), df["low"].where(low_candidate).shift(right)
 
 
-def enrich_point_in_time(
-    df: pd.DataFrame,
-    *,
-    pivot_left: int = 3,
-    pivot_right: int = 3,
-    breakout_lookback: int = 20,
-) -> pd.DataFrame:
+def enrich_point_in_time(df: pd.DataFrame, *, pivot_left: int = 3, pivot_right: int = 3, breakout_lookback: int = 20) -> pd.DataFrame:
     """Build features without using information after each row's timestamp."""
     if df.empty:
         return df.copy()
 
     out = enrich(df.copy().reset_index(drop=True))
     confirmed_high, confirmed_low = _confirmed_pivots(out, pivot_left, pivot_right)
-    out["confirmed_pivot_high"] = out["high"].where(confirmed_high.notna()).shift(0)
-    out["confirmed_pivot_low"] = out["low"].where(confirmed_low.notna()).shift(0)
+    out["confirmed_pivot_high"] = confirmed_high
+    out["confirmed_pivot_low"] = confirmed_low
 
-    last_high = None
-    last_low = None
-    previous_high = None
-    previous_low = None
+    last_high = last_low = previous_high = previous_low = None
     trends: list[str] = []
     supports: list[float | None] = []
     resistances: list[float | None] = []
@@ -75,29 +61,14 @@ def enrich_point_in_time(
     return out
 
 
-def generate_signals(
-    df: pd.DataFrame,
-    *,
-    symbol: str,
-    market_score: float = 0.0,
-    min_score: float = 60.0,
-    pivot_left: int = 3,
-    pivot_right: int = 3,
-) -> list[TradeSignal]:
+def generate_signals(df: pd.DataFrame, *, symbol: str, market_score: float = 0.0, min_score: float = 60.0, pivot_left: int = 3, pivot_right: int = 3) -> list[TradeSignal]:
     """Generate signals exclusively through the canonical signal engine."""
     features = enrich_point_in_time(df, pivot_left=pivot_left, pivot_right=pivot_right)
     config = SignalConfig(buy_threshold=min_score, sell_threshold=-min_score)
     signals: list[TradeSignal] = []
 
     for _, row in features.iterrows():
-        signal = generate_signal(
-            row.to_dict(),
-            market_score=market_score,
-            config=config,
-            symbol=symbol,
-            event_time=row["timestamp"],
-        )
+        signal = generate_signal(row.to_dict(), market_score=market_score, config=config, symbol=symbol, event_time=row["timestamp"])
         if signal.action in {"BUY", "SELL"}:
             signals.append(signal)
-
     return signals
