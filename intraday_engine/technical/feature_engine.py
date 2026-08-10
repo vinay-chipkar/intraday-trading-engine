@@ -6,6 +6,7 @@ from datetime import date, datetime
 import pandas as pd
 
 from intraday_engine.patterns.candles import PATTERN_COLUMNS, add_candle_patterns
+from intraday_engine.patterns.market_structure import add_market_structure
 from intraday_engine.technical.indicators import add_indicators
 
 
@@ -48,9 +49,10 @@ def technical_feature_score(row: pd.Series) -> float:
     return max(0.0, min(100.0, score))
 
 
-def add_feature_engine(df: pd.DataFrame) -> pd.DataFrame:
-    """Return OHLCV plus all point-in-time technical and candlestick features."""
-    return add_candle_patterns(add_indicators(df))
+def add_feature_engine(df: pd.DataFrame, *, support_window: int = 20) -> pd.DataFrame:
+    """Return OHLCV plus point-in-time technical, pattern and structure features."""
+    out = add_candle_patterns(add_indicators(df))
+    return add_market_structure(out, level_lookback=support_window)
 
 
 def latest_feature_snapshot(
@@ -62,15 +64,14 @@ def latest_feature_snapshot(
     support_window: int = 20,
 ) -> dict:
     """Build one serializable snapshot from the latest available candle only."""
-    enriched = add_feature_engine(df)
+    enriched = add_feature_engine(df, support_window=support_window)
     if enriched.empty:
         raise ValueError("Cannot build a feature snapshot from an empty dataframe")
 
     row = enriched.iloc[-1]
-    recent = enriched.iloc[max(0, len(enriched) - support_window - 1):-1]
-    support = float(recent["low"].min()) if not recent.empty else float(row["low"])
-    resistance = float(recent["high"].max()) if not recent.empty else float(row["high"])
     close = float(row["close"])
+    support = float(row["support"])
+    resistance = float(row["resistance"])
 
     distance_to_support = ((close - support) / support * 100.0) if support else 0.0
     distance_to_resistance = ((resistance - close) / resistance * 100.0) if resistance else 0.0
@@ -100,6 +101,10 @@ def latest_feature_snapshot(
         "distance_to_resistance_pct": distance_to_resistance,
         "candle_pattern": row.get("candle_pattern"),
         "trend": row.get("trend"),
+        "market_structure": row.get("market_structure"),
+        "structure_trend": row.get("structure_trend"),
+        "double_top": bool(row.get("double_top", False)),
+        "double_bottom": bool(row.get("double_bottom", False)),
         "breakout": bool(row.get("opening_range_breakout", False)),
         "breakdown": bool(row.get("opening_range_breakdown", False)),
         "feature_score": technical_feature_score(row),
@@ -110,6 +115,8 @@ def latest_feature_snapshot(
         "bb_middle", "bb_upper", "bb_lower", "bb_width_pct", "atr_pct", "session_volume",
         "session_high", "session_low", "distance_from_vwap_pct", "opening_range_high",
         "opening_range_low", "opening_range_breakout", "opening_range_breakdown",
+        "support", "resistance", "pivot_high", "pivot_low", "market_structure",
+        "structure_trend", "double_top", "double_bottom", "support_slope", "resistance_slope",
     ]
     feature_payload = {
         column: _json_value(row.get(column)) for column in feature_columns
