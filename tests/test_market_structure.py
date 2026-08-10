@@ -29,10 +29,11 @@ def test_pivot_is_only_exposed_after_confirmation():
 
 
 def test_higher_highs_and_higher_lows_create_bullish_structure():
+    # The 115 high must have one candle after it to be a confirmed pivot.
     df = _frame(
-        [100, 102, 106, 104, 110, 108, 115, 112],
-        [95, 98, 96, 100, 98, 104, 101, 107],
-        [98, 101, 103, 102, 108, 106, 112, 110],
+        [100, 102, 106, 104, 110, 108, 115, 112, 111],
+        [95, 98, 96, 100, 98, 104, 101, 107, 106],
+        [98, 101, 103, 102, 108, 106, 112, 110, 109],
     )
     out = add_market_structure(df, pivot_left=1, pivot_right=1)
     latest = out.iloc[-1]
@@ -61,10 +62,11 @@ def test_double_top_requires_separation_and_price_tolerance():
 
 
 def test_latest_market_structure_is_serializable():
+    # Keep the latest 115 high confirmed before reading the snapshot.
     df = _frame(
-        [100, 102, 106, 104, 110, 108, 115, 112],
-        [95, 98, 96, 100, 98, 104, 101, 107],
-        [98, 101, 103, 102, 108, 106, 112, 110],
+        [100, 102, 106, 104, 110, 108, 115, 112, 111],
+        [95, 98, 96, 100, 98, 104, 101, 107, 106],
+        [98, 101, 103, 102, 108, 106, 112, 110, 109],
     )
     snapshot = latest_market_structure(df, pivot_left=1, pivot_right=1)
 
