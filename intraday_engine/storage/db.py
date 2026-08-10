@@ -3,7 +3,7 @@ from __future__ import annotations
 import duckdb
 import pandas as pd
 
-from config import settings
+from config.settings import settings
 
 
 SCHEMA = """
