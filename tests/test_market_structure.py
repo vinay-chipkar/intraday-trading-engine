@@ -57,7 +57,7 @@ def test_double_top_requires_separation_and_price_tolerance():
         double_pattern_min_bars=3,
     )
 
-    assert out.iloc[-1]["double_top"] is True
+    assert out.iloc[-1]["double_top"] == True
 
 
 def test_latest_market_structure_is_serializable():
