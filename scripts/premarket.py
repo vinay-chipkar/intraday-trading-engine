@@ -10,7 +10,7 @@ from intraday_engine.market.context import (
     values_from_quotes,
     vix_penalty,
 )
-from intraday_engine.market.news import aggregate_news_sentiment, fetch_recent_news
+from intraday_engine.market.news import fetch_recent_news
 from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.storage.db import (
     get_instruments,
@@ -44,7 +44,7 @@ def main() -> None:
     news_stats = latest_market_news_stats(lookback_hours=settings.news_lookback_hours)
     values["news_count"] = news_stats["news_count"]
     values["high_impact_news_count"] = news_stats["high_impact_news_count"]
-    values["news_sentiment_score"] = aggregate_news_sentiment(news_articles, now=now_utc)
+    values["news_sentiment_score"] = news_stats["news_score"]
 
     context = build_context(values, timezone=settings.timezone)
     row = context.as_dict()
