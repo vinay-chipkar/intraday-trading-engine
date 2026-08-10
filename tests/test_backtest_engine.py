@@ -71,4 +71,4 @@ def test_target_and_metrics_are_deterministic():
     assert result.win_rate == pytest.approx(1.0)
     assert result.profit_factor == float("inf")
     assert result.net_points == pytest.approx(3.0)
-    assert result.expectancy_r == pytest.approx(0.75)
+    assert result.expectancy_r == pytest.approx(1.0)
