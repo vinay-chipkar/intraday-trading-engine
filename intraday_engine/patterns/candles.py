@@ -136,8 +136,8 @@ def add_candle_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
     priority = [
         "bullish_engulfing", "bearish_engulfing", "morning_star", "evening_star",
-        "three_white_soldiers", "three_black_crows", "hammer", "hanging_man",
-        "inverted_hammer", "shooting_star", "doji", "marubozu", "inside_bar", "outside_bar",
+        "three_white_soldiers", "three_black_crows", "hanging_man", "hammer",
+        "shooting_star", "inverted_hammer", "doji", "marubozu", "inside_bar", "outside_bar",
     ]
     labels = {
         "bullish_engulfing": "BULLISH_ENGULFING", "bearish_engulfing": "BEARISH_ENGULFING",
