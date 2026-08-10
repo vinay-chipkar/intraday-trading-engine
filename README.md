@@ -6,6 +6,7 @@ Research-first intraday engine for NSE equities using Upstox. The design deliber
 
 ```text
 09:00 market context
+        -> global cues + Indian indices + volatility
         -> instrument/universe sync
         -> intraday candle ingestion
         -> technical features
@@ -21,9 +22,29 @@ Research-first intraday engine for NSE equities using Upstox. The design deliber
 
 **No live order placement is implemented.** The execution layer is intentionally left out until the research and paper-trading results are validated.
 
+## Market context
+
+`scripts/premarket.py` captures a timestamped snapshot into DuckDB. The current context uses Upstox market quotes for:
+
+- GIFT NIFTY
+- Dow Jones
+- S&P 500
+- Nasdaq
+- NIFTY 50
+- NIFTY Bank
+- India VIX
+- Brent
+- optional USD/INR
+
+A transparent weighted score classifies the regime as `BULLISH`, `MILD_BULLISH`, `NEUTRAL`, `MILD_BEARISH`, or `BEARISH`. The score is a research feature and is not treated as a trading prediction.
+
+Global instrument keys are configurable through `.env`. Upstox introduced a Global Instruments file in May 2026 and documents GIFT NIFTY, major global indices, USD/INR and oil indicators as usable with Market Quote and Historical Candle APIs.
+
+FII/DII and stock-specific news are intentionally separate provider inputs for now. They will be integrated without fabricating missing data; `NULL`/zero is used where a provider is not yet connected.
+
 ## Repository layout
 
-- `intraday_engine/market/` — Upstox REST adapter, market context, instrument resolution.
+- `intraday_engine/market/` — Upstox REST adapter, market context, instrument resolution and ingestion.
 - `intraday_engine/technical/` — EMA, RSI, ATR, VWAP, volume, Bollinger Bands, swing structure, breakout/breakdown.
 - `intraday_engine/patterns/` — candlesticks and double-top/double-bottom detection.
 - `intraday_engine/strategy/` — feature enrichment, scoring and signal construction.
@@ -55,7 +76,7 @@ Set `UPSTOX_ACCESS_TOKEN` in `.env`.
 python scripts/sync_instruments.py
 ```
 
-2. Capture pre-market context. `scripts/premarket.py` pulls global/index data through Upstox and leaves FII/DII/news as explicit provider inputs.
+2. Capture the pre-market context:
 
 ```bash
 python scripts/premarket.py
@@ -85,4 +106,4 @@ This repository is a research and paper-trading system. It does not place live o
 
 ## Upstox notes
 
-The adapter uses Upstox V3 intraday/historical candle APIs and the instrument-search API. Upstox recommends using `instrument_key` as the stable identifier rather than `exchange_token`.
+The adapter uses Upstox V3 intraday/historical candle APIs and the Instrument Search API. Upstox recommends using `instrument_key` as the stable identifier rather than `exchange_token`.
