@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 import pandas as pd
 
-from intraday_engine.patterns.candles import add_candle_patterns
+from intraday_engine.patterns.candles import PATTERN_COLUMNS, add_candle_patterns
 from intraday_engine.technical.indicators import add_indicators
 
 
@@ -109,10 +109,17 @@ def latest_feature_snapshot(
         "adx14", "plus_di14", "minus_di14", "macd", "macd_signal", "macd_histogram",
         "bb_middle", "bb_upper", "bb_lower", "bb_width_pct", "atr_pct", "session_volume",
         "session_high", "session_low", "distance_from_vwap_pct", "opening_range_high",
-        "opening_range_low", "opening_range_breakout", "opening_range_breakdown", "pattern_flags",
+        "opening_range_low", "opening_range_breakout", "opening_range_breakdown",
     ]
+    feature_payload = {
+        column: _json_value(row.get(column)) for column in feature_columns
+    }
+    feature_payload.update({
+        pattern: bool(row.get(pattern, False)) for pattern in PATTERN_COLUMNS
+    })
+
     snapshot["feature_json"] = json.dumps(
-        {column: _json_value(row.get(column)) for column in feature_columns},
+        feature_payload,
         sort_keys=True,
         separators=(",", ":"),
     )
