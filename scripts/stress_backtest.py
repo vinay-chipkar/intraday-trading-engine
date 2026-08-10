@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 
-from intraday_engine.backtest.pipeline import run_rule_backtest
+from intraday_engine.backtest.engine import backtest_signals
+from intraday_engine.strategy.point_in_time import generate_signals
 
 
 def _floats(value: str) -> list[float]:
@@ -29,16 +32,44 @@ def main() -> None:
     if not files:
         raise SystemExit(f"No *_30d.csv files found in {path}")
 
+    combinations_per_file = len(args.min_scores) * len(args.slippage_points)
+    total_runs = len(files) * combinations_per_file
+    completed_runs = 0
+    started_at = time.perf_counter()
+
+    print(
+        f"Stress backtest: {len(files)} symbol files x {len(args.min_scores)} scores x "
+        f"{len(args.slippage_points)} slippage values = {total_runs} runs",
+        flush=True,
+    )
+
     rows: list[dict[str, object]] = []
-    for file in files:
+    for file_number, file in enumerate(files, start=1):
         symbol = file.stem.removesuffix("_30d").upper()
         bars = pd.read_csv(file, parse_dates=["timestamp"])
+        print(
+            f"[{file_number}/{len(files)}] {symbol}: loaded {len(bars):,} bars",
+            flush=True,
+        )
+
         for min_score in args.min_scores:
+            # Feature generation is the expensive part. Generate the causal
+            # signals once for this score and reuse them across slippage runs.
+            signals = generate_signals(
+                bars.sort_values("timestamp").reset_index(drop=True),
+                symbol=symbol,
+                min_score=min_score,
+            )
+            print(
+                f"  score={min_score:g}: {len(signals)} signals; "
+                f"running {len(args.slippage_points)} slippage cases",
+                flush=True,
+            )
+
             for slippage in args.slippage_points:
-                result = run_rule_backtest(
+                result = backtest_signals(
+                    signals,
                     bars,
-                    symbol=symbol,
-                    min_score=min_score,
                     max_holding_bars=args.max_holding_bars,
                     slippage_points=slippage,
                 )
@@ -55,6 +86,16 @@ def main() -> None:
                         "max_drawdown_points": result.max_drawdown_points,
                         "expectancy_r": result.expectancy_r,
                     }
+                )
+                completed_runs += 1
+                elapsed = time.perf_counter() - started_at
+                rate = completed_runs / elapsed if elapsed > 0 else 0.0
+                remaining = (total_runs - completed_runs) / rate if rate > 0 else 0.0
+                print(
+                    f"    [{completed_runs}/{total_runs}] slip={slippage:g} "
+                    f"expectancy={result.expectancy_r:.4f} "
+                    f"ETA={remaining:.0f}s",
+                    flush=True,
                 )
 
     frame = pd.DataFrame(rows).sort_values(
