@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from intraday_engine.market.context import (
     build_context,
     classify,
@@ -28,7 +30,7 @@ def test_score_is_deterministic():
         "banknifty_change_pct": 0.4,
         "india_vix_penalty": 0.0,
     }
-    assert score_market(values) == 11.7
+    assert score_market(values) == pytest.approx(11.7)
 
 
 def test_vix_penalty_only_applies_above_baseline():
