@@ -70,13 +70,19 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
     if not rows:
         return []
 
-    max_elapsed = max(1.0, min(float(r.get("elapsed_session_minutes", 1.0)), SESSION_MINUTES))
+    max_elapsed = max(
+        1.0,
+        min(
+            max(float(row.get("elapsed_session_minutes", 1.0)) for row in rows),
+            SESSION_MINUTES,
+        ),
+    )
     fraction = max_elapsed / SESSION_MINUTES
 
     liquidity_values = [
-        float(r.get("avg_daily_traded_value") or 0.0)
-        for r in rows
-        if float(r.get("avg_daily_traded_value") or 0.0) > 0
+        float(row.get("avg_daily_traded_value") or 0.0)
+        for row in rows
+        if float(row.get("avg_daily_traded_value") or 0.0) > 0
     ]
 
     ranked: list[dict] = []
