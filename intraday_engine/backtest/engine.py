@@ -84,7 +84,7 @@ def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: 
             if float(bar["open"]) <= stop:
                 exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) >= target:
-                exit_price, outcome = float(bar["open"), "TARGET_GAP"
+                exit_price, outcome = float(bar["open"]), "TARGET_GAP"
             elif low <= stop:
                 exit_price, outcome = stop, "STOP"
             elif high >= target:
