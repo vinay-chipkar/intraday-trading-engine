@@ -128,6 +128,25 @@ def build_feature_frame(bars: pd.DataFrame) -> pd.DataFrame:
     return enrich_point_in_time(bars.sort_values("timestamp").reset_index(drop=True))
 
 
+def prepare_research(
+    bars: pd.DataFrame,
+    *,
+    symbol: str,
+    min_score: float = 60.0,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[TradeSignal]]:
+    """Prepare ordered bars, causal features and signals once per symbol.
+
+    Research evaluates several filters over the same feature/signal stream. Keeping
+    this preparation outside the per-filter loop avoids recomputing the expensive
+    point-in-time feature frame and signal list for every filter.
+    """
+    ordered = bars.sort_values("timestamp").reset_index(drop=True).copy()
+    ordered["symbol"] = symbol
+    features = build_feature_frame(ordered)
+    signals = generate_signals(ordered, symbol=symbol, min_score=min_score)
+    return ordered, features, signals
+
+
 def filter_signals(
     signals: list[TradeSignal],
     features: pd.DataFrame,
@@ -165,12 +184,21 @@ def evaluate_filter(
     max_holding_bars: int = 30,
     start_time: pd.Timestamp | None = None,
     end_time: pd.Timestamp | None = None,
+    features: pd.DataFrame | None = None,
+    signals: list[TradeSignal] | None = None,
 ) -> BacktestResult:
-    """Backtest one declared filter without changing the production signal engine."""
+    """Backtest one declared filter without changing the production signal engine.
+
+    ``features`` and ``signals`` may be supplied by callers evaluating multiple
+    filters over the same bars. When omitted, this retains the original standalone
+    behavior and prepares them internally.
+    """
     ordered = bars.sort_values("timestamp").reset_index(drop=True).copy()
     ordered["symbol"] = symbol
-    features = build_feature_frame(ordered)
-    signals = generate_signals(ordered, symbol=symbol, min_score=min_score)
+    if features is None:
+        features = build_feature_frame(ordered)
+    if signals is None:
+        signals = generate_signals(ordered, symbol=symbol, min_score=min_score)
     selected = filter_signals(
         signals,
         features,
