@@ -24,6 +24,8 @@ class BacktestTrade:
     pnl_points: float
     r_multiple: float
     holding_bars: int
+    mae_points: float = 0.0
+    mfe_points: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,9 @@ def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: 
         return None
 
     side = signal.side
+    mae_points = 0.0
+    mfe_points = 0.0
+
     for offset in range(max_holding_bars):
         position = signal_index + 1 + offset
         if position >= len(symbol_bars):
@@ -81,6 +86,9 @@ def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: 
         low = float(bar["low"])
 
         if side == "LONG":
+            mfe_points = max(mfe_points, high - entry)
+            mae_points = max(mae_points, entry - low)
+
             if float(bar["open"]) <= stop:
                 exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) >= target:
@@ -92,6 +100,9 @@ def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: 
             else:
                 continue
         else:
+            mfe_points = max(mfe_points, entry - low)
+            mae_points = max(mae_points, high - entry)
+
             if float(bar["open"]) >= stop:
                 exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) <= target:
@@ -105,12 +116,53 @@ def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: 
 
         exit_price = _exit_price(side, exit_price, slippage_points)
         pnl = exit_price - entry if side == "LONG" else entry - exit_price
-        return BacktestTrade(signal.symbol or "UNKNOWN", side, signal.event_time, first_bar["timestamp"], bar["timestamp"], entry, exit_price, stop, target, outcome, pnl, pnl / risk, offset + 1)
+        return BacktestTrade(
+            signal.symbol or "UNKNOWN",
+            side,
+            signal.event_time,
+            first_bar["timestamp"],
+            bar["timestamp"],
+            entry,
+            exit_price,
+            stop,
+            target,
+            outcome,
+            pnl,
+            pnl / risk,
+            offset + 1,
+            mae_points,
+            mfe_points,
+        )
 
     last = symbol_bars.iloc[min(signal_index + max_holding_bars, len(symbol_bars) - 1)]
+    high = float(last["high"])
+    low = float(last["low"])
+    if side == "LONG":
+        mfe_points = max(mfe_points, high - entry)
+        mae_points = max(mae_points, entry - low)
+    else:
+        mfe_points = max(mfe_points, entry - low)
+        mae_points = max(mae_points, high - entry)
+
     exit_price = _exit_price(side, float(last["close"]), slippage_points)
     pnl = exit_price - entry if side == "LONG" else entry - exit_price
-    return BacktestTrade(signal.symbol or "UNKNOWN", side, signal.event_time, first_bar["timestamp"], last["timestamp"], entry, exit_price, stop, target, "TIMEOUT", pnl, pnl / risk, max_holding_bars)
+    return BacktestTrade(
+        signal.symbol or "UNKNOWN",
+        side,
+        signal.event_time,
+        first_bar["timestamp"],
+        last["timestamp"],
+        entry,
+        exit_price,
+        stop,
+        target,
+        "TIMEOUT",
+        pnl,
+        pnl / risk,
+        max_holding_bars,
+        mae_points,
+        mfe_points,
+    )
 
 
 def _metrics(trades: list[BacktestTrade]) -> BacktestResult:

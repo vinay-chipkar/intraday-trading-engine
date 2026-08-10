@@ -20,6 +20,7 @@ def trade_diagnostics(
     rows: list[dict[str, object]] = []
     for trade in result.trades:
         signal = signal_map.get((trade.symbol, pd.Timestamp(trade.signal_time)))
+        risk = abs(trade.entry_price - trade.stop_loss)
         rows.append(
             {
                 "symbol": trade.symbol,
@@ -35,7 +36,12 @@ def trade_diagnostics(
                 "pnl_points": trade.pnl_points,
                 "r_multiple": trade.r_multiple,
                 "holding_bars": trade.holding_bars,
+                "mae_points": trade.mae_points,
+                "mfe_points": trade.mfe_points,
+                "mae_r": trade.mae_points / risk if risk > 0 else None,
+                "mfe_r": trade.mfe_points / risk if risk > 0 else None,
                 "signal_score": signal.score if signal else None,
+                "score_magnitude": abs(signal.score) if signal else None,
                 "confidence": signal.confidence if signal else None,
                 "reasons": " | ".join(signal.reasons) if signal else "",
             }
@@ -44,11 +50,13 @@ def trade_diagnostics(
     return pd.DataFrame(rows)
 
 
-def summarize_diagnostics(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Return side, score-band, and reason summaries for completed trades."""
+def summarize_diagnostics(
+    trades: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return side, score-band, reason, and excursion summaries for completed trades."""
     if trades.empty:
         empty = pd.DataFrame()
-        return empty, empty, empty
+        return empty, empty, empty, empty
 
     by_side = (
         trades.groupby(["symbol", "side"], dropna=False)
@@ -58,6 +66,7 @@ def summarize_diagnostics(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             net_points=("pnl_points", "sum"),
             expectancy_r=("r_multiple", "mean"),
             avg_score=("signal_score", "mean"),
+            avg_score_magnitude=("score_magnitude", "mean"),
         )
         .reset_index()
     )
@@ -65,19 +74,25 @@ def summarize_diagnostics(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
 
     bands = [-float("inf"), 60, 65, 70, 75, 80, 85, 90, float("inf")]
     labels = ["<60", "60-65", "65-70", "70-75", "75-80", "80-85", "85-90", "90+"]
-    scored = trades.dropna(subset=["signal_score"]).copy()
-    scored["score_band"] = pd.cut(scored["signal_score"], bins=bands, labels=labels, right=False)
+    scored = trades.dropna(subset=["score_magnitude"]).copy()
+    scored["score_band"] = pd.cut(
+        scored["score_magnitude"], bins=bands, labels=labels, right=False
+    )
     by_score = (
-        scored.groupby("score_band", observed=False)
+        scored.groupby(["side", "score_band"], observed=False)
         .agg(
             trades=("pnl_points", "size"),
             wins=("pnl_points", lambda s: int((s > 0).sum())),
             net_points=("pnl_points", "sum"),
             expectancy_r=("r_multiple", "mean"),
+            avg_mae_r=("mae_r", "mean"),
+            avg_mfe_r=("mfe_r", "mean"),
         )
         .reset_index()
     )
-    by_score["win_rate"] = by_score["wins"] / by_score["trades"].where(by_score["trades"] > 0)
+    by_score["win_rate"] = by_score["wins"] / by_score["trades"].where(
+        by_score["trades"] > 0
+    )
 
     reason_rows: list[dict[str, object]] = []
     for _, trade in trades.iterrows():
@@ -107,4 +122,27 @@ def summarize_diagnostics(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             .sort_values(["symbol", "side", "net_points"], ascending=[True, True, False])
         )
 
-    return by_side, by_score, by_reason
+    by_excursion = (
+        trades.groupby(["symbol", "side"], dropna=False)
+        .agg(
+            trades=("pnl_points", "size"),
+            avg_mae_points=("mae_points", "mean"),
+            median_mae_points=("mae_points", "median"),
+            avg_mfe_points=("mfe_points", "mean"),
+            median_mfe_points=("mfe_points", "median"),
+            avg_mae_r=("mae_r", "mean"),
+            avg_mfe_r=("mfe_r", "mean"),
+            target_hits=("outcome", lambda s: int(s.isin(["TARGET", "TARGET_GAP"]).sum())),
+            stop_hits=("outcome", lambda s: int(s.isin(["STOP", "STOP_GAP"]).sum())),
+            timeouts=("outcome", lambda s: int((s == "TIMEOUT").sum())),
+        )
+        .reset_index()
+    )
+    by_excursion["target_hit_rate"] = by_excursion["target_hits"] / by_excursion["trades"]
+    by_excursion["stop_hit_rate"] = by_excursion["stop_hits"] / by_excursion["trades"]
+    by_excursion["timeout_rate"] = by_excursion["timeouts"] / by_excursion["trades"]
+    by_excursion["mfe_to_mae"] = by_excursion["avg_mfe_points"] / by_excursion[
+        "avg_mae_points"
+    ].replace(0, pd.NA)
+
+    return by_side, by_score, by_reason, by_excursion
