@@ -12,7 +12,8 @@ Research-first intraday engine for NSE equities using Upstox. The design deliber
         -> technical features
         -> candlestick + market structure
         -> candidate scoring / top 10
-        -> signal generation
+        -> point-in-time signal generation
+        -> deterministic backtest
         -> paper trading
         -> outcome labels
         -> six-month dataset
@@ -47,10 +48,10 @@ FII/DII and stock-specific news are intentionally separate provider inputs for n
 - `intraday_engine/market/` — Upstox REST adapter, market context, instrument resolution and ingestion.
 - `intraday_engine/technical/` — EMA, RSI, ATR, VWAP, volume, Bollinger Bands, swing structure, breakout/breakdown.
 - `intraday_engine/patterns/` — candlesticks and double-top/double-bottom detection.
-- `intraday_engine/strategy/` — feature enrichment, scoring and signal construction.
+- `intraday_engine/strategy/` — feature enrichment, scoring, signal construction and point-in-time historical features.
 - `intraday_engine/paper/` — risk-based position sizing and paper broker.
 - `intraday_engine/ml/` — forward labels and ML training scaffold.
-- `intraday_engine/backtest/` — deterministic signal simulation and performance metrics.
+- `intraday_engine/backtest/` — deterministic signal simulation, pipeline integration and performance metrics.
 - `intraday_engine/storage/` — DuckDB schema and persistence.
 - `config/universe.csv` — starter liquid NSE equity universe.
 - `scripts/` — runnable entry points.
@@ -88,7 +89,13 @@ python scripts/premarket.py
 python scripts/scan.py
 ```
 
-4. Run tests:
+4. Run a historical rule backtest against a CSV containing `timestamp,open,high,low,close` and optional `volume`:
+
+```bash
+python scripts/backtest.py data.csv --symbol RELIANCE
+```
+
+5. Run tests:
 
 ```bash
 pytest
@@ -96,7 +103,7 @@ pytest
 
 ## Data philosophy
 
-Every decision point should preserve the features available **at that timestamp**. Future candles are only used later to create outcome labels. This prevents look-ahead leakage when the six-month dataset is eventually used for ML.
+Every decision point should preserve the features available **at that timestamp**. Historical feature generation confirms pivots only after the required right-side bars have completed. The backtest then executes signals on the next bar, never on the signal candle itself. Future candles are used only for outcome evaluation. This prevents look-ahead leakage when the six-month dataset is eventually used for ML.
 
 The intended ML target is not a raw BUY/SELL prediction. The first model should estimate the probability that a defined setup reaches its target before its stop within a fixed horizon. Rule-based signals and ML probability can then be evaluated together.
 
