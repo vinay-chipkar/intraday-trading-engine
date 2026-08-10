@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -13,6 +13,9 @@ class SignalConfig:
     stop_atr_multiple: float = 1.0
     target_atr_multiple: float = 1.5
     max_distance_from_vwap_pct: float = 2.0
+    use_structural_stop: bool = True
+    structural_stop_buffer_atr: float = 0.10
+    max_structural_stop_atr: float = 2.50
 
 
 @dataclass(frozen=True)
@@ -26,9 +29,15 @@ class TradeSignal:
     reward_risk: float | None
     reasons: tuple[str, ...]
     blockers: tuple[str, ...]
+    symbol: str | None = None
+    event_time: object | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def side(self) -> str:
+        return {"BUY": "LONG", "SELL": "SHORT"}.get(self.action, self.action)
 
 
 def _number(row: dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -47,7 +56,7 @@ def _score(row: dict[str, Any], market_score: float) -> tuple[float, list[str], 
     blockers: list[str] = []
 
     trend = str(row.get("trend", "SIDEWAYS"))
-    structure = str(row.get("structure_trend", "SIDEWAYS"))
+    structure = str(row.get("structure_trend", row.get("trend", "SIDEWAYS")))
     close = _number(row, "close")
     ema9 = _number(row, "ema9")
     ema20 = _number(row, "ema20")
@@ -143,17 +152,46 @@ def _score(row: dict[str, Any], market_score: float) -> tuple[float, list[str], 
     return max(-100.0, min(100.0, score)), reasons, blockers
 
 
+def _structural_stop(
+    row: dict[str, Any],
+    *,
+    side: str,
+    entry: float,
+    atr: float,
+    config: SignalConfig,
+) -> tuple[float | None, str | None]:
+    atr_stop = (
+        entry - config.stop_atr_multiple * atr
+        if side == "LONG"
+        else entry + config.stop_atr_multiple * atr
+    )
+    if not config.use_structural_stop:
+        return atr_stop, None
+
+    level_key = "support" if side == "LONG" else "resistance"
+    level = _number(row, level_key, float("nan"))
+    if level != level:  # NaN
+        return atr_stop, None
+
+    buffer = config.structural_stop_buffer_atr * atr
+    structural = level - buffer if side == "LONG" else level + buffer
+    risk = abs(entry - structural)
+    if risk <= 0:
+        return None, "structural stop is invalid"
+    if risk > config.max_structural_stop_atr * atr:
+        return None, "structural stop exceeds maximum risk"
+    return structural, "structural stop" 
+
+
 def generate_signal(
     row: dict[str, Any],
     *,
     market_score: float = 0.0,
     config: SignalConfig | None = None,
+    symbol: str | None = None,
+    event_time: object | None = None,
 ) -> TradeSignal:
-    """Generate a research-only BUY/SELL/NO_TRADE decision from one point-in-time snapshot.
-
-    This function never submits an order. It is intentionally deterministic so
-    the exact same feature row produces the exact same decision in backtests.
-    """
+    """Generate the single deterministic research signal from one point-in-time row."""
     cfg = config or SignalConfig()
     entry = _number(row, "close")
     atr = _number(row, "atr14")
@@ -171,17 +209,23 @@ def generate_signal(
 
     if not blockers and score >= cfg.buy_threshold:
         action = "BUY"
-        stop_loss = entry - cfg.stop_atr_multiple * atr
-        target = entry + cfg.target_atr_multiple * atr
     elif not blockers and score <= cfg.sell_threshold:
         action = "SELL"
-        stop_loss = entry + cfg.stop_atr_multiple * atr
-        target = entry - cfg.target_atr_multiple * atr
 
-    if action != "NO_TRADE" and stop_loss is not None and target is not None:
-        risk = abs(entry - stop_loss)
-        reward = abs(target - entry)
-        reward_risk = reward / risk if risk else None
+    if action != "NO_TRADE":
+        side = "LONG" if action == "BUY" else "SHORT"
+        stop_loss, stop_reason = _structural_stop(
+            row, side=side, entry=entry, atr=atr, config=cfg
+        )
+        if stop_reason:
+            reasons.append(stop_reason) if stop_reason == "structural stop" else blockers.append(stop_reason)
+        if stop_loss is None:
+            action = "NO_TRADE"
+        else:
+            risk = abs(entry - stop_loss)
+            target = entry + cfg.target_atr_multiple * risk if side == "LONG" else entry - cfg.target_atr_multiple * risk
+            reward = abs(target - entry)
+            reward_risk = reward / risk if risk else None
 
     confidence = min(100.0, abs(score))
     return TradeSignal(
@@ -194,4 +238,6 @@ def generate_signal(
         reward_risk=reward_risk,
         reasons=tuple(reasons),
         blockers=tuple(blockers),
+        symbol=symbol,
+        event_time=event_time,
     )
