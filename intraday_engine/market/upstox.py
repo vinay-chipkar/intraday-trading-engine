@@ -121,3 +121,47 @@ class UpstoxREST:
             {"instrument_key": ",".join(instrument_keys)},
         )
         return payload.get("data", {})
+
+    def news(self, instrument_keys: list[str], page_size: int = 100) -> dict:
+        """Return recent Upstox news grouped by instrument key."""
+        if not instrument_keys:
+            return {}
+        if len(instrument_keys) > 30:
+            raise ValueError("Upstox News API accepts at most 30 instrument keys per request")
+        payload = self._get(
+            "/v2/news",
+            {
+                "category": "instrument_keys",
+                "instrument_keys": ",".join(instrument_keys),
+                "page_number": 1,
+                "page_size": min(page_size, 100),
+            },
+        )
+        return payload.get("data", {})
+
+    @staticmethod
+    def quote_metrics(quotes: dict) -> dict[str, dict[str, float | None]]:
+        """Normalize Upstox full-quote responses to LTP, previous close and change %."""
+        normalized: dict[str, dict[str, float | None]] = {}
+        for key, raw in quotes.items():
+            if not isinstance(raw, dict):
+                continue
+            ltp = raw.get("last_price", raw.get("ltp"))
+            ohlc = raw.get("ohlc") or {}
+            previous_close = raw.get("prev_close")
+            if previous_close is None:
+                previous_close = ohlc.get("close")
+            try:
+                ltp = float(ltp) if ltp is not None else None
+                previous_close = float(previous_close) if previous_close is not None else None
+            except (TypeError, ValueError):
+                ltp, previous_close = None, None
+            change_pct = None
+            if ltp is not None and previous_close not in (None, 0):
+                change_pct = (ltp / previous_close - 1.0) * 100.0
+            normalized[key] = {
+                "ltp": ltp,
+                "previous_close": previous_close,
+                "change_pct": change_pct,
+            }
+        return normalized
