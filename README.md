@@ -7,7 +7,8 @@ Research-first intraday engine for NSE equities using Upstox. The design deliber
 ```text
 09:00 market context
         -> instrument/universe sync
-        -> intraday candle ingestion
+        -> historical/intraday candle ingestion
+        -> DuckDB
         -> technical features
         -> candlestick + market structure
         -> candidate scoring / top 10
@@ -23,7 +24,7 @@ Research-first intraday engine for NSE equities using Upstox. The design deliber
 
 ## Repository layout
 
-- `intraday_engine/market/` — Upstox REST adapter, market context, instrument resolution.
+- `intraday_engine/market/` — Upstox REST adapter, market context, instrument resolution, candle normalization, historical backfill, and incremental ingestion.
 - `intraday_engine/technical/` — EMA, RSI, ATR, VWAP, volume, Bollinger Bands, swing structure, breakout/breakdown.
 - `intraday_engine/patterns/` — candlesticks and double-top/double-bottom detection.
 - `intraday_engine/strategy/` — feature enrichment, scoring and signal construction.
@@ -47,42 +48,87 @@ cp .env.example .env
 
 Set `UPSTOX_ACCESS_TOKEN` in `.env`.
 
-## First run
+## Real-data pipeline
 
-1. Resolve the current Upstox instrument keys:
+### 1. Resolve instruments
 
 ```bash
 python scripts/sync_instruments.py
 ```
 
-2. Capture pre-market context. `scripts/premarket.py` pulls global/index data through Upstox and leaves FII/DII/news as explicit provider inputs.
+This stores the current Upstox `instrument_key` for each symbol in `instrument_master`.
+
+### 2. Backfill historical 1-minute candles
 
 ```bash
-python scripts/premarket.py
+python scripts/backfill.py --symbol RELIANCE --days 30
 ```
 
-3. Run the scanner during market hours:
+Multiple symbols can be supplied:
 
 ```bash
-python scripts/scan.py
+python scripts/backfill.py --symbol RELIANCE --symbol TCS --symbol INFY --days 30
 ```
 
-4. Run tests:
+Or use the configured universe:
 
 ```bash
-pytest
+python scripts/backfill.py --universe --days 30
 ```
+
+The service splits minute-data requests into 30-calendar-day windows because Upstox V3 limits minute intervals to roughly one month per historical request. citeturn0search1turn0search8
+
+### 3. Incrementally ingest the current trading day
+
+```bash
+python scripts/ingest.py
+```
+
+Or for selected stocks:
+
+```bash
+python scripts/ingest.py --symbol RELIANCE --symbol TCS
+```
+
+The current-day Upstox intraday endpoint is fetched, but only candles newer than the latest persisted timestamp are inserted. The database primary key also makes the operation idempotent. Upstox V3 supports configurable intraday minute intervals. citeturn0search4
+
+### 4. Inspect DuckDB
+
+The database is created at the path configured by `DUCKDB_PATH` and contains at least:
+
+```text
+instrument_master
+candles
+ingestion_runs
+market_context
+candidate_events
+feature_snapshots
+signals
+training_labels
+```
+
+The candle key is:
+
+```text
+instrument_key + timestamp + interval
+```
+
+This prevents duplicate candles when ingestion runs repeatedly.
+
+## Upstox data sources
+
+The engine uses Upstox's instrument search API for symbol-to-instrument resolution. The API supports NSE/EQ filtering and returns the `instrument_key` needed by the market-data APIs. citeturn0search3turn0search0
+
+Historical minute candles use Upstox Historical Candle V3. Current-day candles use Intraday Candle V3. citeturn0search1turn0search4
+
+Upstox also exposes global instruments such as GIFT NIFTY, major global indices, USD/INR and oil indicators through its market-data APIs; those will be wired into the pre-market context in the next milestone. citeturn0search11
 
 ## Data philosophy
 
-Every decision point should preserve the features available **at that timestamp**. Future candles are only used later to create outcome labels. This prevents look-ahead leakage when the six-month dataset is eventually used for ML.
+Every decision point must preserve the features available **at that timestamp**. Future candles are only used later to create outcome labels. This prevents look-ahead leakage when the six-month dataset is eventually used for ML.
 
 The intended ML target is not a raw BUY/SELL prediction. The first model should estimate the probability that a defined setup reaches its target before its stop within a fixed horizon. Rule-based signals and ML probability can then be evaluated together.
 
-## Safety / research boundary
+## Research boundary
 
 This repository is a research and paper-trading system. It does not place live orders. Do not enable live execution until there is a statistically meaningful backtest, out-of-sample validation, realistic transaction-cost/slippage modelling, and an extended paper-trading period.
-
-## Upstox notes
-
-The adapter uses Upstox V3 intraday/historical candle APIs and the instrument-search API. Upstox recommends using `instrument_key` as the stable identifier rather than `exchange_token`.
