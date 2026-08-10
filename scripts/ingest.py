@@ -18,7 +18,7 @@ def main() -> None:
     results = ingest_symbols(symbols=symbols, interval=args.interval)
     failures = 0
     for result in results:
-        print(f"{result.symbol}: received={result.rows_received} inserted={result.rows_inserted} last={result.last_timestamp}")
+        print(f"{result.symbol}: received={result.rows_received} written={result.rows_written} last={result.last_timestamp}")
         print(f"  QUALITY: {result.quality}")
         if result.error:
             failures += 1
