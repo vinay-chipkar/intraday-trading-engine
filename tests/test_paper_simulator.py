@@ -38,10 +38,10 @@ def test_daily_loss_halts_new_positions():
         max_daily_loss=0.01,
         max_position_notional=0.25,
     )
-    position = broker.open("TEST", "LONG", 100.0, 98.0, 104.0, now=DAY)
+    position = broker.open("TEST", "LONG", 100.0, 96.0, 108.0, now=DAY)
     assert position is not None
 
-    result = broker.mark("TEST", 98.0, now=DAY)
+    result = broker.mark("TEST", 96.0, now=DAY)
     assert result is not None
     assert result["reason"] == "STOP"
     assert broker.halted
@@ -58,8 +58,8 @@ def test_daily_guard_resets_on_next_trading_day():
         max_daily_loss=0.01,
         max_position_notional=0.25,
     )
-    broker.open("TEST", "LONG", 100.0, 98.0, 104.0, now=DAY)
-    broker.mark("TEST", 98.0, now=DAY)
+    broker.open("TEST", "LONG", 100.0, 96.0, 108.0, now=DAY)
+    broker.mark("TEST", 96.0, now=DAY)
     assert broker.halted
 
     status = broker.status(now=NEXT_DAY)
