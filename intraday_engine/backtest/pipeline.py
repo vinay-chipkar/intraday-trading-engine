@@ -26,6 +26,7 @@ def run_rule_backtest(
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     ordered = bars.sort_values("timestamp").reset_index(drop=True).copy()
+    ordered["symbol"] = symbol
     signals = generate_signals(
         ordered,
         symbol=symbol,

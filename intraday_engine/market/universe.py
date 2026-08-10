@@ -1,6 +1,6 @@
 from pathlib import Path
 import pandas as pd
-from config import settings
+from config.settings import settings
 from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.storage.db import upsert_instruments
 DEFAULT_PATH=Path(__file__).resolve().parents[2]/'config'/'universe.csv'

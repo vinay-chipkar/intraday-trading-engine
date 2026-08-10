@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from config import settings
+from config.settings import settings
 from intraday_engine.market.context import (
     build_context,
     instrument_keys,
