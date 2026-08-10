@@ -12,6 +12,13 @@ dependencies = [
   "python-dotenv>=1.0", "scikit-learn>=1.5", "joblib>=1.4", "pytest>=8.0"
 ]
 
+# Explicit package discovery prevents setuptools from treating config/ as a
+# second top-level Python package during `pip install -e .`.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["intraday_engine*"]
+exclude = ["config*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "-q"
