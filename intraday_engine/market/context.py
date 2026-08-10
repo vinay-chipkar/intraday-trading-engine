@@ -52,6 +52,8 @@ def score_market(values: dict) -> float:
     score += (values.get("banknifty_change_pct") or 0.0) * 2.0
     score += (values.get("fii_flow_score") or 0.0)
     score -= (values.get("india_vix_penalty") or 0.0)
+    news_sentiment = max(-1.0, min(1.0, float(values.get("news_sentiment_score") or 0.0)))
+    score += news_sentiment * 10.0
     return float(score)
 
 
