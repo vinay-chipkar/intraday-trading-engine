@@ -27,6 +27,20 @@ CREATE TABLE IF NOT EXISTS market_context(
     regime VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS market_news(
+    captured_at TIMESTAMPTZ,
+    published_at TIMESTAMPTZ,
+    symbol VARCHAR,
+    instrument_key VARCHAR,
+    heading VARCHAR,
+    summary VARCHAR,
+    article_link VARCHAR,
+    sentiment_score DOUBLE,
+    impact_score DOUBLE,
+    high_impact BOOLEAN,
+    PRIMARY KEY (instrument_key, published_at, article_link)
+);
+
 CREATE TABLE IF NOT EXISTS instrument_master(
     symbol VARCHAR PRIMARY KEY,
     instrument_key VARCHAR,
@@ -171,6 +185,11 @@ FEATURE_SNAPSHOT_COLUMNS = [
     "feature_score", "feature_json",
 ]
 
+NEWS_COLUMNS = [
+    "captured_at", "published_at", "symbol", "instrument_key", "heading",
+    "summary", "article_link", "sentiment_score", "impact_score", "high_impact",
+]
+
 
 def conn():
     connection = duckdb.connect(settings.duckdb_path)
@@ -208,10 +227,83 @@ def insert_market_context(values: dict) -> None:
         raise ValueError(f"Missing market context columns: {sorted(missing)}")
     connection = conn()
     try:
+        placeholders = ",".join("?" for _ in MARKET_CONTEXT_COLUMNS)
         connection.execute(
-            "INSERT INTO market_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO market_context VALUES ({placeholders})",
             [values[column] for column in MARKET_CONTEXT_COLUMNS],
         )
+    finally:
+        connection.close()
+
+
+def insert_news(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    frame = pd.DataFrame(rows)
+    missing = set(NEWS_COLUMNS).difference(frame.columns)
+    if missing:
+        raise ValueError(f"Missing news columns: {sorted(missing)}")
+    connection = conn()
+    try:
+        ordered = frame[NEWS_COLUMNS].copy()
+        connection.register("incoming_news", ordered)
+        before = connection.execute("SELECT COUNT(*) FROM market_news").fetchone()[0]
+        connection.execute("INSERT OR IGNORE INTO market_news SELECT * FROM incoming_news")
+        after = connection.execute("SELECT COUNT(*) FROM market_news").fetchone()[0]
+        return int(after - before)
+    finally:
+        connection.unregister("incoming_news")
+        connection.close()
+
+
+def latest_symbol_news_scores(lookback_hours: int = 24) -> pd.DataFrame:
+    if lookback_hours < 1:
+        raise ValueError("lookback_hours must be >= 1")
+    connection = conn()
+    try:
+        return connection.execute(
+            """
+            SELECT
+                symbol,
+                SUM(sentiment_score * (1.0 + impact_score))
+                    / NULLIF(SUM(1.0 + impact_score), 0) AS news_score,
+                COUNT(*) AS news_count,
+                SUM(CASE WHEN high_impact THEN 1 ELSE 0 END) AS high_impact_news_count
+            FROM market_news
+            WHERE published_at >= CURRENT_TIMESTAMP - (? * INTERVAL '1 hour')
+            GROUP BY symbol
+            """,
+            [lookback_hours],
+        ).df()
+    finally:
+        connection.close()
+
+
+def latest_market_news_stats(lookback_hours: int = 24) -> dict[str, float | int]:
+    if lookback_hours < 1:
+        raise ValueError("lookback_hours must be >= 1")
+    connection = conn()
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS news_count,
+                COALESCE(SUM(CASE WHEN high_impact THEN 1 ELSE 0 END), 0) AS high_impact_news_count,
+                COALESCE(
+                    SUM(sentiment_score * (1.0 + impact_score))
+                    / NULLIF(SUM(1.0 + impact_score), 0),
+                    0.0
+                ) AS news_score
+            FROM market_news
+            WHERE published_at >= CURRENT_TIMESTAMP - (? * INTERVAL '1 hour')
+            """,
+            [lookback_hours],
+        ).fetchone()
+        return {
+            "news_count": int(row[0] or 0),
+            "high_impact_news_count": int(row[1] or 0),
+            "news_score": float(row[2] or 0.0),
+        }
     finally:
         connection.close()
 
