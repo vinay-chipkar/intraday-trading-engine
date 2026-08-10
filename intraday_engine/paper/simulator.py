@@ -111,9 +111,10 @@ class PaperBroker:
             raise ValueError("side must be LONG or SHORT")
         if entry <= 0 or stop <= 0 or target <= 0:
             return None
-        if side == "LONG" and not (stop < entry < target):
+        effective_entry = self._effective_entry(side, entry)
+        if side == "LONG" and not (stop < effective_entry < target):
             return None
-        if side == "SHORT" and not (target < entry < stop):
+        if side == "SHORT" and not (target < effective_entry < stop):
             return None
         if self.halted or self._daily_loss_limit_hit():
             self.halted = True
@@ -124,7 +125,6 @@ class PaperBroker:
         quantity = self.size(entry, stop, side=side)
         if quantity <= 0:
             return None
-        effective_entry = self._effective_entry(side, entry)
         position = Position(symbol, side, quantity, effective_entry, float(stop), float(target))
         self.positions[symbol] = position
         return position
