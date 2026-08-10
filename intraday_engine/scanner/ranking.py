@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from math import log10
 from typing import Iterable
 
 
@@ -62,7 +61,7 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
     symbol, instrument_key, ltp, previous_close, cumulative_volume,
     avg_daily_volume, avg_daily_traded_value, day_high, day_low.
 
-    RVOL is *time-adjusted cumulative volume*: current cumulative volume is
+    RVOL is time-adjusted cumulative volume: current cumulative volume is
     compared with average full-day volume scaled by elapsed NSE session time.
     This is deliberately explicit so it can later be replaced by a same-minute
     historical RVOL model without changing the scanner contract.
