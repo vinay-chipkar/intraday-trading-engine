@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 class IngestionResult:
     symbol: str
     rows_received: int
-    rows_inserted: int
+    rows_written: int
     last_timestamp: object | None
     quality: dict[str, int | bool]
     error: str | None = None
@@ -28,10 +28,12 @@ def ingest_symbol(api: UpstoxREST, *, symbol: str, instrument_key: str, interval
         normalized = normalize_candles(frame, instrument_key=instrument_key, symbol=symbol, interval=interval_key)
         last_stored = latest_candle_timestamp(instrument_key, interval_key)
         if last_stored is not None:
-            normalized = normalized[normalized["timestamp"] > last_stored].copy()
-        inserted = insert_candles(normalized)
+            # Include the latest stored candle because it may still be in progress.
+            normalized = normalized[normalized["timestamp"] >= last_stored].copy()
+        written = len(normalized)
+        insert_candles(normalized)
         last_timestamp = normalized["timestamp"].max() if not normalized.empty else last_stored
-        return IngestionResult(symbol, len(frame), inserted, last_timestamp, report)
+        return IngestionResult(symbol, len(frame), written, last_timestamp, report)
     except Exception as exc:
         LOGGER.exception("Intraday ingestion failed for %s", symbol)
         return IngestionResult(symbol, 0, 0, None, {}, str(exc))
