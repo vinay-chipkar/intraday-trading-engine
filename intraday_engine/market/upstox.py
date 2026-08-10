@@ -1,51 +1,123 @@
 from __future__ import annotations
+
 from datetime import date
 from urllib.parse import quote
 import os
+
 import pandas as pd
 import requests
 
+
 BASE = "https://api.upstox.com"
 
+
 class UpstoxREST:
+    """Small REST boundary around the Upstox endpoints used by the research engine."""
+
     def __init__(self, access_token: str | None = None, timeout: int = 20):
         self.access_token = access_token or os.getenv("UPSTOX_ACCESS_TOKEN")
         if not self.access_token:
             raise RuntimeError("UPSTOX_ACCESS_TOKEN is not set")
-        self.session = requests.Session(); self.timeout = timeout
+        self.session = requests.Session()
+        self.timeout = timeout
 
     @property
-    def headers(self):
-        return {"Accept": "application/json", "Authorization": f"Bearer {self.access_token}"}
+    def headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.access_token}",
+        }
 
     def _get(self, path: str, params: dict | None = None) -> dict:
-        r = self.session.get(BASE + path, headers=self.headers, params=params, timeout=self.timeout)
-        r.raise_for_status(); return r.json()
+        response = self.session.get(
+            BASE + path,
+            headers=self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
 
-    def search_instruments(self, query: str, exchanges="NSE", segments="EQ", records=30):
-        return self._get("/v2/instruments/search", {"query":query,"exchanges":exchanges,"segments":segments,"page_number":1,"records":min(records,30)}).get("data", [])
+    def search_instruments(
+        self,
+        query: str,
+        exchanges: str = "NSE",
+        segments: str = "EQ",
+        records: int = 30,
+        page_number: int = 1,
+    ) -> list[dict]:
+        payload = self._get(
+            "/v2/instruments/search",
+            {
+                "query": query,
+                "exchanges": exchanges,
+                "segments": segments,
+                "page_number": page_number,
+                "records": min(records, 30),
+            },
+        )
+        return payload.get("data", [])
 
     def resolve_equity(self, symbol: str) -> dict:
+        symbol = symbol.upper().strip()
         for row in self.search_instruments(symbol):
-            if row.get("trading_symbol", "").upper() == symbol.upper() and row.get("instrument_key"):
+            if row.get("trading_symbol", "").upper() == symbol and row.get("instrument_key"):
                 return row
         raise LookupError(f"NSE equity instrument not found: {symbol}")
 
     @staticmethod
-    def _frame(candles):
-        cols=["timestamp","open","high","low","close","volume","open_interest"]
-        df=pd.DataFrame(candles, columns=cols)
-        if df.empty: return df
-        df["timestamp"]=pd.to_datetime(df.timestamp, utc=True).dt.tz_convert("Asia/Kolkata")
-        for c in cols[1:]: df[c]=pd.to_numeric(df[c], errors="coerce")
-        return df.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
+    def _frame(candles: list[list]) -> pd.DataFrame:
+        columns = [
+            "timestamp", "open", "high", "low", "close", "volume", "open_interest"
+        ]
+        frame = pd.DataFrame(candles, columns=columns)
+        if frame.empty:
+            return frame
 
-    def intraday_candles(self, instrument_key: str, unit="minutes", interval=1):
-        key=quote(instrument_key, safe="")
-        return self._frame(self._get(f"/v3/historical-candle/intraday/{key}/{unit}/{interval}").get("data",{}).get("candles",[]))
+        frame["timestamp"] = (
+            pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+            .dt.tz_convert("Asia/Kolkata")
+        )
+        for column in columns[1:]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
-    def historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: date, from_date: date|None=None):
-        key=quote(instrument_key, safe="")
-        path=f"/v3/historical-candle/{key}/{unit}/{interval}/{to_date.isoformat()}"
-        if from_date: path += f"/{from_date.isoformat()}"
-        return self._frame(self._get(path).get("data",{}).get("candles",[]))
+        return (
+            frame.dropna(subset=["timestamp"])
+            .sort_values("timestamp")
+            .drop_duplicates("timestamp", keep="last")
+            .reset_index(drop=True)
+        )
+
+    def intraday_candles(
+        self, instrument_key: str, unit: str = "minutes", interval: int = 1
+    ) -> pd.DataFrame:
+        key = quote(instrument_key, safe="")
+        payload = self._get(
+            f"/v3/historical-candle/intraday/{key}/{unit}/{interval}"
+        )
+        return self._frame(payload.get("data", {}).get("candles", []))
+
+    def historical_candles(
+        self,
+        instrument_key: str,
+        unit: str,
+        interval: int,
+        to_date: date,
+        from_date: date | None = None,
+    ) -> pd.DataFrame:
+        key = quote(instrument_key, safe="")
+        path = f"/v3/historical-candle/{key}/{unit}/{interval}/{to_date.isoformat()}"
+        if from_date:
+            path += f"/{from_date.isoformat()}"
+        payload = self._get(path)
+        return self._frame(payload.get("data", {}).get("candles", []))
+
+    def full_market_quotes(self, instrument_keys: list[str]) -> dict:
+        if not instrument_keys:
+            return {}
+        payload = self._get(
+            "/v2/market-quote/quotes",
+            {"instrument_key": ",".join(instrument_keys)},
+        )
+        return payload.get("data", {})
