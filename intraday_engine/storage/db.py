@@ -97,6 +97,7 @@ def upsert_instruments(df: pd.DataFrame) -> None:
 
 
 def insert_candles(df: pd.DataFrame) -> int:
+    """Upsert candles; this refreshes an in-progress latest candle on each poll."""
     if df is None or df.empty:
         return 0
     missing = set(CANDLE_COLUMNS).difference(df.columns)
@@ -106,7 +107,7 @@ def insert_candles(df: pd.DataFrame) -> int:
     try:
         connection.register("incoming_df", df[CANDLE_COLUMNS].copy())
         before = connection.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
-        connection.execute("INSERT OR IGNORE INTO candles SELECT * FROM incoming_df")
+        connection.execute("INSERT OR REPLACE INTO candles SELECT * FROM incoming_df")
         after = connection.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
         return int(after - before)
     finally:
@@ -123,9 +124,7 @@ def get_instruments(symbols: list[str] | None = None) -> pd.DataFrame:
                 f"SELECT symbol, instrument_key, name, trading_symbol FROM instrument_master WHERE symbol IN ({placeholders}) ORDER BY symbol",
                 [s.upper() for s in symbols],
             ).df()
-        return connection.execute(
-            "SELECT symbol, instrument_key, name, trading_symbol FROM instrument_master ORDER BY symbol"
-        ).df()
+        return connection.execute("SELECT symbol, instrument_key, name, trading_symbol FROM instrument_master ORDER BY symbol").df()
     finally:
         connection.close()
 
