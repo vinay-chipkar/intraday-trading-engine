@@ -46,8 +46,13 @@ def _latest_level(values: list[float], close: float, *, support: bool) -> float:
     if support:
         candidates = [value for value in values if value <= close]
         return max(candidates) if candidates else (max(values) if values else close)
+
+    # Resistance represents the strongest confirmed overhead structural level,
+    # so select the highest confirmed pivot above the current close. If price
+    # has already broken above all confirmed highs, retain the highest known
+    # structural high rather than dropping to an older/lower pivot.
     candidates = [value for value in values if value >= close]
-    return min(candidates) if candidates else (min(values) if values else close)
+    return max(candidates) if candidates else (max(values) if values else close)
 
 
 def _classify_structure(pivots: list[tuple[str, float]]) -> str:
