@@ -23,6 +23,7 @@ class Settings:
     paper_max_daily_loss: float = float(os.getenv("PAPER_MAX_DAILY_LOSS", "0.02"))
     paper_max_position_notional: float = float(os.getenv("PAPER_MAX_POSITION_NOTIONAL", "0.25"))
     paper_slippage_points: float = float(os.getenv("PAPER_SLIPPAGE_POINTS", "0.10"))
+    news_lookback_hours: int = int(os.getenv("NEWS_LOOKBACK_HOURS", "24"))
 
 
 settings = Settings()
