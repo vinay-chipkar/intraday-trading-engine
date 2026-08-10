@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import pandas as pd
 
+from intraday_engine.patterns.candles import add_candle_patterns
 from intraday_engine.technical.indicators import add_indicators
 
 
@@ -48,8 +49,8 @@ def technical_feature_score(row: pd.Series) -> float:
 
 
 def add_feature_engine(df: pd.DataFrame) -> pd.DataFrame:
-    """Return OHLCV plus all point-in-time technical features."""
-    return add_indicators(df)
+    """Return OHLCV plus all point-in-time technical and candlestick features."""
+    return add_candle_patterns(add_indicators(df))
 
 
 def latest_feature_snapshot(
@@ -97,7 +98,7 @@ def latest_feature_snapshot(
         "resistance": resistance,
         "distance_to_support_pct": distance_to_support,
         "distance_to_resistance_pct": distance_to_resistance,
-        "candle_pattern": None,
+        "candle_pattern": row.get("candle_pattern"),
         "trend": row.get("trend"),
         "breakout": bool(row.get("opening_range_breakout", False)),
         "breakdown": bool(row.get("opening_range_breakdown", False)),
@@ -108,7 +109,7 @@ def latest_feature_snapshot(
         "adx14", "plus_di14", "minus_di14", "macd", "macd_signal", "macd_histogram",
         "bb_middle", "bb_upper", "bb_lower", "bb_width_pct", "atr_pct", "session_volume",
         "session_high", "session_low", "distance_from_vwap_pct", "opening_range_high",
-        "opening_range_low", "opening_range_breakout", "opening_range_breakdown",
+        "opening_range_low", "opening_range_breakout", "opening_range_breakdown", "pattern_flags",
     ]
     snapshot["feature_json"] = json.dumps(
         {column: _json_value(row.get(column)) for column in feature_columns},
