@@ -54,12 +54,30 @@ def _volatility_score(day_range_pct: float) -> float:
     return 0.0
 
 
+def _news_component(news_score: float, market_score: float) -> tuple[float, str | None]:
+    """Convert [-1,1] news sentiment into a small directional ranking component."""
+    news_score = max(-1.0, min(1.0, news_score))
+    if abs(news_score) < 0.05:
+        return 0.0, None
+    if market_score >= 5:
+        component = news_score * 10.0
+    elif market_score <= -5:
+        component = -news_score * 10.0
+    else:
+        component = abs(news_score) * 5.0
+    if component >= 2.0:
+        return min(10.0, component), "NEWS_SUPPORT"
+    if component <= -2.0:
+        return max(-10.0, component), "NEWS_CONFLICT"
+    return component, "NEWS_WEAK"
+
+
 def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int = 10) -> list[dict]:
     """Score and rank liquid intraday candidates.
 
     Expected row fields:
     symbol, instrument_key, ltp, previous_close, cumulative_volume,
-    avg_daily_volume, avg_daily_traded_value, day_high, day_low.
+    avg_daily_volume, avg_daily_traded_value, day_high, day_low, news_score.
 
     RVOL is time-adjusted cumulative volume: current cumulative volume is
     compared with average full-day volume scaled by elapsed NSE session time.
@@ -94,6 +112,7 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
         avg_value = float(row.get("avg_daily_traded_value") or 0.0)
         day_high = float(row.get("day_high") or ltp)
         day_low = float(row.get("day_low") or ltp)
+        news_score = float(row.get("news_score") or 0.0)
 
         change_pct = row.get("change_pct")
         if change_pct is None and previous_close:
@@ -106,11 +125,13 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
 
         liquidity_pct = _percentile(liquidity_values, avg_value)
         liquidity_score = 20.0 * liquidity_pct
+        news_component, news_reason = _news_component(news_score, market_score)
         score = (
             liquidity_score
             + _rvol_score(rvol)
             + _momentum_score(change_pct, market_score)
             + _volatility_score(day_range_pct)
+            + news_component
         )
 
         reasons: list[str] = []
@@ -126,6 +147,8 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
             reasons.append("MOMENTUM")
         if 1.0 <= day_range_pct <= 4.0:
             reasons.append("HEALTHY_INTRADAY_RANGE")
+        if news_reason:
+            reasons.append(news_reason)
 
         ranked.append(
             {
@@ -134,7 +157,8 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
                 "relative_volume": round(rvol, 6),
                 "day_range_pct": round(day_range_pct, 6),
                 "liquidity_percentile": round(liquidity_pct, 6),
-                "candidate_score": round(min(100.0, score), 6),
+                "news_score": round(news_score, 6),
+                "candidate_score": round(max(0.0, min(100.0, score)), 6),
                 "reason": ",".join(reasons) if reasons else "NO_STRONG_FACTOR",
             }
         )
