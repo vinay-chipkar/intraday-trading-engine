@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from intraday_engine.market.upstox import UpstoxREST
-from intraday_engine.storage.db import conn, insert_df, latest_market_score
+from intraday_engine.storage.db import conn, insert_df, latest_market_score, latest_symbol_news_scores
 from .ranking import rank_candidates
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -21,6 +21,7 @@ class ScannerConfig:
     lookback_days: int = 20
     minimum_price: float = 50.0
     minimum_avg_daily_traded_value: float = 50_000_000.0
+    news_lookback_hours: int = 24
 
 
 def _elapsed_minutes(timestamp: datetime) -> float:
@@ -131,8 +132,10 @@ def scan_top10(
     symbols = instruments["symbol"].tolist()
     liquidity = _historical_liquidity(symbols, trading_date, config.lookback_days)
     vwap = _current_day_vwap(symbols, trading_date)
+    news = latest_symbol_news_scores(config.news_lookback_hours)
     liquidity_map = liquidity.set_index("symbol").to_dict("index") if not liquidity.empty else {}
     vwap_map = vwap.set_index("symbol")["vwap"].to_dict() if not vwap.empty else {}
+    news_map = news.set_index("symbol").to_dict("index") if not news.empty else {}
     market_score = latest_market_score()
 
     rows: list[dict] = []
@@ -154,6 +157,7 @@ def scan_top10(
         if avg_value < config.minimum_avg_daily_traded_value:
             continue
 
+        news_row = news_map.get(symbol, {})
         ohlc = raw.get("ohlc") or {}
         rows.append(
             {
@@ -168,6 +172,9 @@ def scan_top10(
                 "day_high": float(ohlc.get("high") or ltp),
                 "day_low": float(ohlc.get("low") or ltp),
                 "vwap": vwap_map.get(symbol),
+                "news_score": float(news_row.get("news_score") or 0.0),
+                "news_count": int(news_row.get("news_count") or 0),
+                "high_impact_news_count": int(news_row.get("high_impact_news_count") or 0),
                 "elapsed_session_minutes": elapsed,
             }
         )
@@ -190,6 +197,9 @@ def scan_top10(
                 "vwap": row.get("vwap"),
                 "candidate_score": row["candidate_score"],
                 "reason": row["reason"],
+                "news_score": row.get("news_score", 0.0),
+                "news_count": row.get("news_count", 0),
+                "high_impact_news_count": row.get("high_impact_news_count", 0),
             }
             for row in ranked
         ]
