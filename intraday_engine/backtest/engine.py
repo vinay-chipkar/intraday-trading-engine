@@ -6,7 +6,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from intraday_engine.strategy.signals import Signal
+from intraday_engine.signals.engine import TradeSignal
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ def _validate_bars(bars: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
 
-def _fill_price(signal: Signal, bar: pd.Series, slippage_points: float) -> float:
+def _fill_price(signal: TradeSignal, bar: pd.Series, slippage_points: float) -> float:
     raw = float(bar["open"])
     return raw + slippage_points if signal.side == "LONG" else raw - slippage_points
 
@@ -59,21 +59,14 @@ def _exit_price(side: str, price: float, slippage_points: float) -> float:
     return price - slippage_points if side == "LONG" else price + slippage_points
 
 
-def _simulate_one(
-    signal: Signal,
-    symbol_bars: pd.DataFrame,
-    signal_index: int,
-    *,
-    max_holding_bars: int,
-    slippage_points: float,
-) -> BacktestTrade | None:
-    if signal_index + 1 >= len(symbol_bars):
+def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: int, *, max_holding_bars: int, slippage_points: float) -> BacktestTrade | None:
+    if signal_index + 1 >= len(symbol_bars) or signal.stop_loss is None or signal.target is None:
         return None
 
     first_bar = symbol_bars.iloc[signal_index + 1]
     entry = _fill_price(signal, first_bar, slippage_points)
     stop = float(signal.stop_loss)
-    target = float(signal.target1)
+    target = float(signal.target)
     risk = abs(entry - stop)
     if not isfinite(entry) or not isfinite(stop) or not isfinite(target) or risk <= 0:
         return None
@@ -89,71 +82,35 @@ def _simulate_one(
 
         if side == "LONG":
             if float(bar["open"]) <= stop:
-                exit_price = float(bar["open"])
-                outcome = "STOP_GAP"
+                exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) >= target:
-                exit_price = float(bar["open"])
-                outcome = "TARGET_GAP"
+                exit_price, outcome = float(bar["open"), "TARGET_GAP"
             elif low <= stop:
-                exit_price = stop
-                outcome = "STOP"
+                exit_price, outcome = stop, "STOP"
             elif high >= target:
-                exit_price = target
-                outcome = "TARGET"
+                exit_price, outcome = target, "TARGET"
             else:
                 continue
         else:
             if float(bar["open"]) >= stop:
-                exit_price = float(bar["open"])
-                outcome = "STOP_GAP"
+                exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) <= target:
-                exit_price = float(bar["open"])
-                outcome = "TARGET_GAP"
+                exit_price, outcome = float(bar["open"]), "TARGET_GAP"
             elif high >= stop:
-                exit_price = stop
-                outcome = "STOP"
+                exit_price, outcome = stop, "STOP"
             elif low <= target:
-                exit_price = target
-                outcome = "TARGET"
+                exit_price, outcome = target, "TARGET"
             else:
                 continue
 
         exit_price = _exit_price(side, exit_price, slippage_points)
-        pnl = (exit_price - entry) if side == "LONG" else (entry - exit_price)
-        return BacktestTrade(
-            symbol=signal.symbol,
-            side=side,
-            signal_time=signal.event_time,
-            entry_time=first_bar["timestamp"],
-            exit_time=bar["timestamp"],
-            entry_price=entry,
-            exit_price=exit_price,
-            stop_loss=stop,
-            target=target,
-            outcome=outcome,
-            pnl_points=pnl,
-            r_multiple=pnl / risk,
-            holding_bars=offset + 1,
-        )
+        pnl = exit_price - entry if side == "LONG" else entry - exit_price
+        return BacktestTrade(signal.symbol or "UNKNOWN", side, signal.event_time, first_bar["timestamp"], bar["timestamp"], entry, exit_price, stop, target, outcome, pnl, pnl / risk, offset + 1)
 
     last = symbol_bars.iloc[min(signal_index + max_holding_bars, len(symbol_bars) - 1)]
     exit_price = _exit_price(side, float(last["close"]), slippage_points)
-    pnl = (exit_price - entry) if side == "LONG" else (entry - exit_price)
-    return BacktestTrade(
-        symbol=signal.symbol,
-        side=side,
-        signal_time=signal.event_time,
-        entry_time=first_bar["timestamp"],
-        exit_time=last["timestamp"],
-        entry_price=entry,
-        exit_price=exit_price,
-        stop_loss=stop,
-        target=target,
-        outcome="TIMEOUT",
-        pnl_points=pnl,
-        r_multiple=pnl / risk,
-        holding_bars=max_holding_bars,
-    )
+    pnl = exit_price - entry if side == "LONG" else entry - exit_price
+    return BacktestTrade(signal.symbol or "UNKNOWN", side, signal.event_time, first_bar["timestamp"], last["timestamp"], entry, exit_price, stop, target, "TIMEOUT", pnl, pnl / risk, max_holding_bars)
 
 
 def _metrics(trades: list[BacktestTrade]) -> BacktestResult:
@@ -174,35 +131,11 @@ def _metrics(trades: list[BacktestTrade]) -> BacktestResult:
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
 
-    return BacktestResult(
-        trades=tuple(trades),
-        total_trades=len(trades),
-        wins=wins,
-        losses=losses,
-        timeouts=timeouts,
-        win_rate=wins / len(trades),
-        profit_factor=gross_profit / gross_loss if gross_loss else float("inf"),
-        net_points=sum(t.pnl_points for t in trades),
-        max_drawdown_points=max_drawdown,
-        expectancy_r=sum(t.r_multiple for t in trades) / len(trades),
-    )
+    return BacktestResult(tuple(trades), len(trades), wins, losses, timeouts, wins / len(trades), gross_profit / gross_loss if gross_loss else float("inf"), sum(t.pnl_points for t in trades), max_drawdown, sum(t.r_multiple for t in trades) / len(trades))
 
 
-def backtest_signals(
-    signals: Iterable[Signal],
-    bars: pd.DataFrame,
-    *,
-    max_holding_bars: int = 30,
-    slippage_points: float = 0.0,
-) -> BacktestResult:
-    """Simulate completed-bar signals with next-bar execution.
-
-    The signal candle is never used for execution. Entry occurs at the next
-    bar open, which prevents same-bar close-to-fill lookahead. Within a bar,
-    if both stop and target are touched, the stop is assumed to trigger first.
-    This is intentionally conservative because OHLC data cannot reveal the
-    true intrabar sequence.
-    """
+def backtest_signals(signals: Iterable[TradeSignal], bars: pd.DataFrame, *, max_holding_bars: int = 30, slippage_points: float = 0.0) -> BacktestResult:
+    """Simulate completed-bar signals with next-bar execution."""
     if max_holding_bars < 1:
         raise ValueError("max_holding_bars must be >= 1")
     if slippage_points < 0:
@@ -210,12 +143,12 @@ def backtest_signals(
 
     frame = _validate_bars(bars)
     grouped = {symbol: group.reset_index(drop=True) for symbol, group in frame.groupby("symbol", sort=False)}
-    ordered_signals = sorted(signals, key=lambda signal: (str(signal.symbol), signal.event_time))
+    ordered_signals = sorted((s for s in signals if s.action in {"BUY", "SELL"}), key=lambda signal: (str(signal.symbol), signal.event_time))
     active_until: dict[str, object] = {}
     trades: list[BacktestTrade] = []
 
     for signal in ordered_signals:
-        if signal.side not in {"LONG", "SHORT"}:
+        if not signal.symbol or signal.event_time is None:
             continue
         symbol_bars = grouped.get(signal.symbol)
         if symbol_bars is None:
@@ -224,17 +157,11 @@ def backtest_signals(
             continue
 
         timestamps = symbol_bars["timestamp"]
-        signal_positions = timestamps.searchsorted(pd.Timestamp(signal.event_time), side="right") - 1
-        if signal_positions < 0:
+        signal_position = timestamps.searchsorted(pd.Timestamp(signal.event_time), side="right") - 1
+        if signal_position < 0:
             continue
 
-        trade = _simulate_one(
-            signal,
-            symbol_bars,
-            int(signal_positions),
-            max_holding_bars=max_holding_bars,
-            slippage_points=slippage_points,
-        )
+        trade = _simulate_one(signal, symbol_bars, int(signal_position), max_holding_bars=max_holding_bars, slippage_points=slippage_points)
         if trade is None:
             continue
         trades.append(trade)
