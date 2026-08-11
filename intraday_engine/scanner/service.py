@@ -174,10 +174,6 @@ def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -
         avg_volume = float(history.get("avg_daily_volume") or 0.0)
         avg_value = float(history.get("avg_daily_traded_value") or 0.0)
         history_days = int(history.get("history_days") or 0)
-        # Missing historical candles are a data-quality flag, not a reason to
-        # silently remove a live-quoted stock from the research universe.
-        # Such rows receive conservative zero-history RVOL/liquidity scores.
-
         news_row = news_map.get(symbol, {})
         ohlc = raw.get("ohlc") or {}
         rows.append(
@@ -198,6 +194,7 @@ def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -
                 "high_impact_news_count": int(news_row.get("high_impact_news_count") or 0),
                 "elapsed_session_minutes": elapsed,
                 "history_days": history_days,
+                "required_history_days": config.lookback_days,
             }
         )
     return rows
@@ -230,6 +227,10 @@ def scan_universe(client: UpstoxREST, config: ScannerConfig | None = None, tradi
             "news_score": row.get("news_score", 0.0),
             "news_count": row.get("news_count", 0),
             "high_impact_news_count": row.get("high_impact_news_count", 0),
+            "history_days": row.get("history_days", 0),
+            "data_quality": row.get("data_quality", "MISSING_HISTORY"),
+            "rvol_valid": row.get("rvol_valid", False),
+            "liquidity_valid": row.get("liquidity_valid", False),
         }
         for row in ranked
     ])
