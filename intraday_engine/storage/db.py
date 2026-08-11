@@ -182,7 +182,6 @@ CREATE TABLE IF NOT EXISTS research_runs(
 );
 """
 
-
 CANDLE_COLUMNS = [
     "instrument_key", "symbol", "timestamp", "interval",
     "open", "high", "low", "close", "volume", "open_interest",
@@ -215,6 +214,10 @@ def conn():
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_score DOUBLE")
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_count INTEGER")
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS high_impact_news_count INTEGER")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS history_days INTEGER")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS data_quality VARCHAR")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS rvol_valid BOOLEAN")
+    connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS liquidity_valid BOOLEAN")
     return connection
 
 
@@ -349,11 +352,9 @@ def insert_candles(df: pd.DataFrame) -> int:
     """Insert candles idempotently and return the number of new rows."""
     if df is None or df.empty:
         return 0
-
     missing = set(CANDLE_COLUMNS).difference(df.columns)
     if missing:
         raise ValueError(f"Missing candle columns: {sorted(missing)}")
-
     connection = conn()
     try:
         ordered = df[CANDLE_COLUMNS].copy()
