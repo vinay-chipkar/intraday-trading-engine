@@ -107,8 +107,8 @@ def scan_top10(
 ) -> list[dict]:
     """Build the current NSE candidate list from stored history plus live quotes.
 
-    The scanner deliberately does not create a BUY/SELL signal. It produces a
-    ranked research universe for the downstream technical/signal engine.
+    The scanner scores every eligible symbol, persists the full ranked research
+    universe, and returns only the configured top-N shortlist downstream.
     """
     config = config or ScannerConfig()
     captured_at = datetime.now(IST)
@@ -180,7 +180,9 @@ def scan_top10(
             }
         )
 
-    ranked = rank_candidates(rows, market_score=market_score, limit=config.limit)
+    # Rank the complete eligible universe first. The previous implementation
+    # truncated here, which meant candidate_events only retained top-N rows.
+    ranked = rank_candidates(rows, market_score=market_score, limit=None)
     if not ranked:
         return []
 
@@ -206,4 +208,7 @@ def scan_top10(
         ]
     )
     insert_df("candidate_events", candidate_df)
-    return ranked
+
+    # Preserve the existing API contract: downstream paper trading receives
+    # only the configured shortlist, while the database retains every row.
+    return ranked[:config.limit]
