@@ -1,0 +1,96 @@
+name: Paper Research Cycle
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:00 IST, Monday-Friday. Scheduled workflows use the default branch.
+    - cron: '0 9 * * 1-5'
+      timezone: 'Asia/Kolkata'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-research-cycle
+  cancel-in-progress: false
+
+jobs:
+  morning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project
+        run: pip install -e .
+
+      - name: Restore historical paper journal
+        run: python -m scripts.restore_paper_journal --input research_data
+
+      - name: Run paper daily bootstrap
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.daily_cycle
+
+      - name: Run morning paper session
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.paper_session --interval 5 --until 12:00 --no-bootstrap
+
+      - name: Upload midday state
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-midday-state
+          path: data/trading.duckdb
+          retention-days: 2
+          if-no-files-found: error
+
+  afternoon:
+    needs: morning
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project
+        run: pip install -e .
+
+      - name: Download midday state
+        uses: actions/download-artifact@v4
+        with:
+          name: paper-midday-state
+          path: data
+
+      - name: Run afternoon paper session
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.paper_session --interval 5 --until 15:30 --no-bootstrap
+
+      - name: Finalize outcomes and export research journal
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.paper_close --output research_data
+
+      - name: Commit research journal
+        run: |
+          git config user.name 'paper-research-bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research_data
+          if git diff --cached --quiet; then
+            echo 'No research data changes to commit'
+          else
+            git commit -m "chore: update paper research journal"
+            git push
+          fi
