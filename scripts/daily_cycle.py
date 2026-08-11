@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--skip-sync", action="store_true")
     parser.add_argument("--skip-ingest", action="store_true")
+    parser.add_argument("--skip-premarket", action="store_true")
     args = parser.parse_args()
 
     report = run_daily_cycle(
@@ -26,6 +27,7 @@ def main() -> None:
         limit=args.limit,
         skip_sync=args.skip_sync,
         skip_ingest=args.skip_ingest,
+        skip_premarket=args.skip_premarket,
     )
 
     print("\n===== DAILY PAPER RESEARCH =====")
