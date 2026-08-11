@@ -104,4 +104,27 @@ def test_scanner_keeps_quoted_stocks_without_historical_liquidity(monkeypatch):
     assert len(ranked) == 8
     assert len(test_scanner_keeps_quoted_stocks_without_historical_liquidity.persisted) == 8
     assert {row["symbol"] for row in ranked} == {f"S{i:02d}" for i in range(8)}
-    assert next(row for row in ranked if row["symbol"] == "S01")["history_days"] == 0
+    incomplete = next(row for row in ranked if row["symbol"] == "S01")
+    assert incomplete["history_days"] == 0
+    assert incomplete["data_quality"] == "MISSING_HISTORY"
+    assert incomplete["rvol_valid"] is False
+    assert incomplete["liquidity_valid"] is False
+    assert "DATA_INCOMPLETE" in incomplete["reason"]
+
+
+def test_incomplete_history_cannot_outrank_complete_history(monkeypatch):
+    instruments = pd.DataFrame([
+        {"symbol": "COMPLETE", "instrument_key": "NSE_EQ|COMPLETE"},
+        {"symbol": "MISSING", "instrument_key": "NSE_EQ|MISSING"},
+    ])
+    liquidity = pd.DataFrame([
+        {"symbol": "COMPLETE", "avg_daily_volume": 1000.0, "avg_daily_traded_value": 100_000_000.0, "history_days": 20},
+    ])
+    _patch_scanner(monkeypatch, instruments, liquidity)
+    monkeypatch.setattr("intraday_engine.scanner.service.insert_df", lambda table, df: None)
+
+    ranked = scan_universe(FakeClient(), ScannerConfig(limit=1), trading_date=pd.Timestamp("2026-08-11").date())
+
+    assert ranked[0]["symbol"] == "COMPLETE"
+    missing = next(row for row in scan_universe(FakeClient(), ScannerConfig(limit=1), trading_date=pd.Timestamp("2026-08-11").date()) if row["symbol"] == "MISSING")
+    assert missing["candidate_score"] < 10.0
