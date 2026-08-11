@@ -102,10 +102,10 @@ def _instrument_rows() -> pd.DataFrame:
 
 
 def _ensure_instrument_master(client: UpstoxREST) -> pd.DataFrame:
-    """Ensure the scanner's configured universe has instrument keys before quoting.
+    """Ensure every configured symbol is represented in instrument_master.
 
-    The database may have been initialized with only a small legacy subset. The
-    scanner must not silently treat that subset as the whole universe.
+    The legacy database may contain only a subset of the configured universe.
+    Missing symbols are resolved here before any quote or ranking work begins.
     """
     configured = list(dict.fromkeys(load_symbols()))
     existing = _instrument_rows()
