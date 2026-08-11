@@ -178,6 +178,13 @@ def _structural_stop(
     risk = abs(entry - structural)
     if risk <= 0:
         return None, "structural stop is invalid"
+    # A LONG stop must sit strictly below entry (and a SHORT stop strictly above);
+    # otherwise abs(entry - structural) still yields a positive "risk" for a stop
+    # that is on the wrong side of entry -- e.g. price has already broken through
+    # support/resistance on this same bar, so "level - buffer" (LONG) can land
+    # above entry instead of below it.
+    if (side == "LONG" and structural > entry) or (side == "SHORT" and structural < entry):
+        return None, "structural stop is on the wrong side of entry"
     if risk > config.max_structural_stop_atr * atr:
         return None, "structural stop exceeds maximum risk"
     return structural, "structural stop" 

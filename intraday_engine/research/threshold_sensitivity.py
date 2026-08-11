@@ -4,9 +4,10 @@ from typing import Iterable
 
 import pandas as pd
 
-from intraday_engine.backtest.engine import BacktestResult, backtest_signals
+from intraday_engine.backtest.engine import backtest_signals
 from intraday_engine.patterns.candles import add_candle_patterns
 from intraday_engine.signals.engine import SignalConfig, TradeSignal, generate_signal
+from intraday_engine.strategy.point_in_time import _confirmed_pivots, pivot_structure
 from intraday_engine.technical.indicators import add_indicators
 
 
@@ -17,7 +18,12 @@ def _prepare_symbol(frame: pd.DataFrame) -> pd.DataFrame:
     # Structural levels use completed bars only; no centered/future windows.
     out["support"] = out["low"].shift(1).rolling(20, min_periods=20).min()
     out["resistance"] = out["high"].shift(1).rolling(20, min_periods=20).max()
-    out["structure_trend"] = out["trend"]
+    # "market structure" is the live pipeline's causal pivot-confirmed trend
+    # (strategy/point_in_time.py::pivot_structure), not a copy of the EMA-order
+    # trend above -- the two are independent signals in the live path and must
+    # stay independent here too.
+    confirmed_high, confirmed_low = _confirmed_pivots(out, 3, 3)
+    out["structure_trend"] = pivot_structure(confirmed_high, confirmed_low, out["close"])["trend"]
     out["double_bottom"] = False
     out["double_top"] = False
     return out
@@ -80,12 +86,18 @@ def _metrics(trades: list) -> dict[str, float | int | None]:
     }
 
 
-def _partition(result: BacktestResult, split_date: pd.Timestamp, train: bool) -> dict:
+def _partition(trades: list, split_date: pd.Timestamp, train: bool) -> dict:
+    # Compare calendar dates, not full timestamps: split_date is derived from
+    # .dt.date (always tz-naive), while a trade's signal_time carries whatever
+    # tz-awareness the source candles had (real Upstox data is tz-aware) -
+    # comparing the raw Timestamps raises "Cannot compare tz-naive and
+    # tz-aware timestamps" whenever the two disagree.
+    boundary = split_date.date()
     if train:
-        trades = [t for t in result.trades if pd.Timestamp(t.signal_time) < split_date]
+        selected = [t for t in trades if pd.Timestamp(t.signal_time).date() < boundary]
     else:
-        trades = [t for t in result.trades if pd.Timestamp(t.signal_time) >= split_date]
-    return _metrics(trades)
+        selected = [t for t in trades if pd.Timestamp(t.signal_time).date() >= boundary]
+    return _metrics(selected)
 
 
 def run_threshold_sweep(
@@ -111,7 +123,11 @@ def run_threshold_sweep(
         raise ValueError("Need at least 4 trading dates for train/OOS research")
     split_date = pd.Timestamp(dates[max(2, int(len(dates) * 0.60))])
 
-    rows = []
+    # Backtest per symbol (cheaper: avoids scanning the full multi-symbol
+    # frame per signal) but pool the resulting trades per threshold before
+    # computing metrics, so profit_factor/drawdown reflect the true combined
+    # trade stream rather than an approximation derived from per-symbol nets.
+    trades_by_threshold: dict[float, list] = {threshold: [] for threshold in threshold_values}
     for symbol, group in frame.groupby("symbol", sort=True):
         print(f"Processing {symbol} ({len(group):,} bars)", flush=True)
         by_threshold = _signals_by_threshold(group, threshold_values)
@@ -122,38 +138,17 @@ def run_threshold_sweep(
                 max_holding_bars=max_holding_bars,
                 slippage_points=slippage_points,
             )
-            train = _partition(result, split_date, True)
-            oos = _partition(result, split_date, False)
-            rows.append({
-                "symbol": symbol,
-                "threshold": threshold,
-                "split_date": split_date.date().isoformat(),
-                **{f"train_{k}": v for k, v in train.items()},
-                **{f"oos_{k}": v for k, v in oos.items()},
-            })
+            trades_by_threshold[threshold].extend(result.trades)
 
-    detail = pd.DataFrame(rows)
-    metric_cols = [c for c in detail.columns if c.startswith(("train_", "oos_"))]
-    aggregated = detail.groupby("threshold", as_index=False)[metric_cols].sum(numeric_only=True)
-
-    # Recompute rate/ratio metrics from their underlying totals instead of
-    # summing per-symbol percentages/ratios.
-    for prefix in ("train_", "oos_"):
-        trades = aggregated[f"{prefix}trades"]
-        wins = aggregated[f"{prefix}wins"]
-        aggregated[f"{prefix}win_rate_pct"] = wins.div(trades.where(trades != 0)).fillna(0).mul(100).round(3)
-        gross_profit = detail.groupby("threshold")[f"{prefix}net_points"].sum().clip(lower=0)
-        gross_loss = (-detail.groupby("threshold")[f"{prefix}net_points"].sum().clip(upper=0))
-        aggregated[f"{prefix}profit_factor"] = gross_profit.div(gross_loss.where(gross_loss != 0)).round(4)
-
-    # Preserve the expected aggregate schema and provide conservative drawdown:
-    # summing symbol-level drawdowns is not valid, so calculate it from the
-    # combined trade stream below.
-    aggregated = aggregated.drop(columns=[c for c in aggregated.columns if c.endswith("max_drawdown_points")], errors="ignore")
-    aggregated["train_max_drawdown_points"] = 0.0
-    aggregated["oos_max_drawdown_points"] = 0.0
-
-    # The original public API returned one aggregate row per threshold.
-    # Keep that contract; symbol-level detail remains useful for diagnostics.
-    aggregated["split_date"] = split_date.date().isoformat()
-    return aggregated.sort_values("threshold").reset_index(drop=True)
+    rows = []
+    for threshold in threshold_values:
+        trades = trades_by_threshold[threshold]
+        train = _partition(trades, split_date, True)
+        oos = _partition(trades, split_date, False)
+        rows.append({
+            "threshold": threshold,
+            "split_date": split_date.date().isoformat(),
+            **{f"train_{k}": v for k, v in train.items()},
+            **{f"oos_{k}": v for k, v in oos.items()},
+        })
+    return pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)

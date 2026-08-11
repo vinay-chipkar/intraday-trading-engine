@@ -8,7 +8,7 @@ import pandas as pd
 
 from config.settings import settings
 from intraday_engine.backtest.engine import backtest_signals
-from intraday_engine.research.threshold_sensitivity import _metrics, _signals_by_threshold
+from intraday_engine.research.threshold_sensitivity import _partition, _signals_by_threshold
 from intraday_engine.technical.indicators import add_indicators
 from intraday_engine.patterns.candles import add_candle_patterns
 
@@ -78,13 +78,13 @@ def main() -> None:
     rows = []
     for threshold in thresholds:
         trades = all_trades[threshold]
-        train = [t for t in trades if pd.Timestamp(t.signal_time) < split_date]
-        oos = [t for t in trades if pd.Timestamp(t.signal_time) >= split_date]
+        train = _partition(trades, split_date, True)
+        oos = _partition(trades, split_date, False)
         rows.append({
             "threshold": threshold,
             "split_date": split_date.date().isoformat(),
-            **{f"train_{k}": v for k, v in _metrics(train).items()},
-            **{f"oos_{k}": v for k, v in _metrics(oos).items()},
+            **{f"train_{k}": v for k, v in train.items()},
+            **{f"oos_{k}": v for k, v in oos.items()},
         })
 
     result = pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
