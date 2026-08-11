@@ -31,6 +31,18 @@ def test_ranker_returns_top_n_and_is_deterministic():
     assert first[0]["candidate_score"] > first[1]["candidate_score"]
 
 
+def test_ranker_can_return_full_universe_without_truncation():
+    rows = [
+        row("AAA", 2.0, 2.5, 200_000_000),
+        row("BBB", 1.0, 1.2, 100_000_000),
+        row("CCC", -1.5, 2.0, 150_000_000),
+    ]
+    ranked = rank_candidates(rows, market_score=0, limit=None)
+    assert len(ranked) == 3
+    assert [r["rank"] for r in ranked] == [1, 2, 3]
+    assert {r["symbol"] for r in ranked} == {"AAA", "BBB", "CCC"}
+
+
 def test_rvol_is_time_adjusted():
     rows = [row("AAA", 1.0, 2.0, 100_000_000)]
     ranked = rank_candidates(rows, market_score=0, limit=1)
