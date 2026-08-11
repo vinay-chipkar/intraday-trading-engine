@@ -2,20 +2,24 @@ from __future__ import annotations
 
 from datetime import date
 from urllib.parse import quote
-import os
 
 import pandas as pd
 import requests
 
+from config.settings import settings
 
 BASE = "https://api.upstox.com"
 
+SYMBOL_ALIASES = {
+    "BAJAJ_AUTO": "BAJAJ-AUTO",
+    "ZOMATO": "ETERNAL",
+    "TATAMOTORS": "TMPV",
+}
+
 
 class UpstoxREST:
-    """Small REST boundary around the Upstox endpoints used by the research engine."""
-
-    def __init__(self, access_token: str | None = None, timeout: int = 20):
-        self.access_token = access_token or os.getenv("UPSTOX_ACCESS_TOKEN")
+    def __init__(self, access_token: str | None = None, timeout: int = 15):
+        self.access_token = access_token or settings.upstox_access_token
         if not self.access_token:
             raise RuntimeError("UPSTOX_ACCESS_TOKEN is not set")
         self.session = requests.Session()
@@ -61,9 +65,17 @@ class UpstoxREST:
 
     def resolve_equity(self, symbol: str) -> dict:
         symbol = symbol.upper().strip()
-        for row in self.search_instruments(symbol):
-            if row.get("trading_symbol", "").upper() == symbol and row.get("instrument_key"):
-                return row
+        candidates = [symbol]
+        alias = SYMBOL_ALIASES.get(symbol)
+        if alias and alias not in candidates:
+            candidates.append(alias)
+
+        for candidate in candidates:
+            for row in self.search_instruments(candidate):
+                trading_symbol = str(row.get("trading_symbol", "")).upper()
+                if trading_symbol == candidate and row.get("instrument_key"):
+                    return row
+
         raise LookupError(f"NSE equity instrument not found: {symbol}")
 
     @staticmethod
@@ -141,13 +153,7 @@ class UpstoxREST:
 
     @staticmethod
     def quote_metrics(quotes: dict) -> dict[str, dict[str, float | None]]:
-        """Normalize full quotes using Upstox net_change when available.
-
-        Upstox full-quote `ohlc.close` is the current session close value, not
-        yesterday's close. Prefer explicit net_change plus last_price to derive
-        the prior close and percentage change. Fall back to prev_close only if
-        the provider supplies it explicitly.
-        """
+        """Normalize full quotes using Upstox net_change when available."""
         normalized: dict[str, dict[str, float | None]] = {}
         for key, raw in quotes.items():
             if not isinstance(raw, dict):
