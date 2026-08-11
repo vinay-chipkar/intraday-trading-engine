@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -16,6 +15,7 @@ from intraday_engine.storage.db import (
     insert_research_run,
     latest_market_context,
 )
+from scripts.premarket import main as capture_premarket
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -27,6 +27,7 @@ def run_daily_cycle(
     limit: int | None = None,
     skip_sync: bool = False,
     skip_ingest: bool = False,
+    skip_premarket: bool = False,
 ) -> dict:
     """Run the safe daily research/paper preparation cycle.
 
@@ -50,6 +51,9 @@ def run_daily_cycle(
         universe_size = len(instruments)
         if universe_size == 0:
             raise LookupError("instrument_master is empty")
+
+        if not skip_premarket:
+            capture_premarket()
 
         if not skip_ingest:
             results = ingest_symbols(interval=settings.candle_interval)
