@@ -43,14 +43,14 @@ def _historical_liquidity(symbols: list[str], trading_date: date, lookback_days:
         WITH daily AS (
             SELECT
                 symbol,
-                CAST(timestamp AS DATE) AS trading_date,
+                CAST(timestamp AT TIME ZONE 'Asia/Kolkata' AS DATE) AS trading_date,
                 SUM(volume) AS daily_volume,
                 SUM(volume * close) AS daily_traded_value
             FROM candles
             WHERE interval = '1m'
               AND symbol IN ({placeholders})
-              AND CAST(timestamp AS DATE) < ?
-            GROUP BY symbol, CAST(timestamp AS DATE)
+              AND CAST(timestamp AT TIME ZONE 'Asia/Kolkata' AS DATE) < ?
+            GROUP BY symbol, CAST(timestamp AT TIME ZONE 'Asia/Kolkata' AS DATE)
         ), ranked AS (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trading_date DESC) AS rn
             FROM daily
@@ -82,7 +82,7 @@ def _current_day_vwap(symbols: list[str], trading_date: date) -> pd.DataFrame:
         FROM candles
         WHERE interval = '1m'
           AND symbol IN ({placeholders})
-          AND CAST(timestamp AS DATE) = ?
+          AND CAST(timestamp AT TIME ZONE 'Asia/Kolkata' AS DATE) = ?
         GROUP BY symbol
         """
         return connection.execute(query, [*symbols, trading_date]).df()
@@ -176,6 +176,7 @@ def scan_top10(
                 "news_count": int(news_row.get("news_count") or 0),
                 "high_impact_news_count": int(news_row.get("high_impact_news_count") or 0),
                 "elapsed_session_minutes": elapsed,
+                "history_days": int(history.get("history_days") or 0),
             }
         )
 

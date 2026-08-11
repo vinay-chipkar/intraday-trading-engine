@@ -41,17 +41,25 @@ def test_vix_penalty_only_applies_above_baseline():
 
 def test_quote_metrics_and_context_mapping():
     keys = {
-        "GLOBAL_INDEX|SGX NIFTY": {"last_price": 101.0, "ohlc": {"close": 100.0}},
-        "NSE_INDEX|Nifty 50": {"last_price": 202.0, "ohlc": {"close": 200.0}},
-        "NSE_INDEX|Nifty Bank": {"last_price": 99.0, "ohlc": {"close": 100.0}},
-        "NSE_INDEX|India VIX": {"last_price": 18.0, "ohlc": {"close": 17.0}},
+        "GLOBAL_INDEX|SGX NIFTY": {"last_price": 101.0, "net_change": 1.0},
+        "NSE_INDEX|Nifty 50": {"last_price": 202.0, "net_change": 2.0},
+        "NSE_INDEX|Nifty Bank": {"last_price": 99.0, "net_change": -1.0},
+        "NSE_INDEX|India VIX": {"last_price": 18.0},
     }
     metrics = UpstoxREST.quote_metrics(keys)
     values = values_from_quotes(metrics)
-    assert round(values["gift_nifty_change_pct"], 4) == 1.0
-    assert round(values["nifty_change_pct"], 4) == 1.0
-    assert round(values["banknifty_change_pct"], 4) == -1.0
+    assert round(values["gift_nifty_change_pct"], 4) == round(1.0 / 100.0 * 100, 4)
+    assert round(values["nifty_change_pct"], 4) == round(2.0 / 200.0 * 100, 4)
+    assert round(values["banknifty_change_pct"], 4) == round(-1.0 / 100.0 * 100, 4)
     assert values["india_vix"] == 18.0
+
+
+def test_quote_metrics_fallback_to_explicit_prev_close():
+    metrics = UpstoxREST.quote_metrics(
+        {"NSE_EQ|TEST": {"last_price": 105.0, "prev_close": 100.0}}
+    )
+    assert metrics["NSE_EQ|TEST"]["previous_close"] == 100.0
+    assert metrics["NSE_EQ|TEST"]["change_pct"] == pytest.approx(5.0)
 
 
 def test_build_context_has_timestamp_and_regime():

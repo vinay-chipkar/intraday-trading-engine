@@ -20,11 +20,31 @@ from intraday_engine.storage.db import (
 )
 
 
+def _safe_market_quotes(client: UpstoxREST, keys: list[str]) -> tuple[dict, list[str]]:
+    """Fetch quotes while isolating a bad/unsupported key instead of killing premarket."""
+    if not keys:
+        return {}, []
+
+    try:
+        return client.full_market_quotes(keys), []
+    except Exception as exc:  # noqa: BLE001 - premarket must retain partial coverage
+        if len(keys) == 1:
+            return {}, [f"market quote failed for {keys[0]}: {exc}"]
+
+        midpoint = len(keys) // 2
+        left_quotes, left_errors = _safe_market_quotes(client, keys[:midpoint])
+        right_quotes, right_errors = _safe_market_quotes(client, keys[midpoint:])
+        return (
+            {**left_quotes, **right_quotes},
+            left_errors + right_errors,
+        )
+
+
 def main() -> None:
     """Capture the market snapshot used by the intraday strategy."""
     client = UpstoxREST(access_token=settings.upstox_access_token)
     keys = instrument_keys()
-    quotes = client.full_market_quotes(list(keys.values()))
+    quotes, quote_errors = _safe_market_quotes(client, list(keys.values()))
     metrics = client.quote_metrics(quotes)
 
     values = values_from_quotes(metrics)
@@ -63,8 +83,8 @@ def main() -> None:
     for name, key in keys.items():
         metric = metrics.get(key, {})
         print(f"{name}: ltp={metric.get('ltp')} change_pct={metric.get('change_pct')}")
-    for error in news_errors:
-        print(f"NEWS_WARNING: {error}")
+    for error in quote_errors + news_errors:
+        print(f"MARKET_DATA_WARNING: {error}")
 
 
 if __name__ == "__main__":

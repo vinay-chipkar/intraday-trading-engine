@@ -165,6 +165,21 @@ CREATE TABLE IF NOT EXISTS training_labels(
     max_adverse_excursion DOUBLE,
     label INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS research_runs(
+    run_id VARCHAR PRIMARY KEY,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    trading_date DATE,
+    mode VARCHAR,
+    status VARCHAR,
+    universe_size INTEGER,
+    candidates_count INTEGER,
+    market_regime VARCHAR,
+    market_score DOUBLE,
+    report_json VARCHAR,
+    error VARCHAR
+);
 """
 
 
@@ -386,9 +401,7 @@ def latest_market_context() -> dict | None:
         row = connection.execute(
             "SELECT * FROM market_context ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
-        if row is None:
-            return None
-        return dict(zip(MARKET_CONTEXT_COLUMNS, row))
+        return dict(zip(MARKET_CONTEXT_COLUMNS, row)) if row is not None else None
     finally:
         connection.close()
 
@@ -396,3 +409,46 @@ def latest_market_context() -> dict | None:
 def latest_market_score():
     context = latest_market_context()
     return float(context["score"]) if context else 0.0
+
+
+def insert_research_run(values: dict) -> None:
+    required = {
+        "run_id", "started_at", "finished_at", "trading_date", "mode", "status",
+        "universe_size", "candidates_count", "market_regime", "market_score",
+        "report_json", "error",
+    }
+    missing = required.difference(values)
+    if missing:
+        raise ValueError(f"Missing research run columns: {sorted(missing)}")
+    connection = conn()
+    try:
+        columns = [
+            "run_id", "started_at", "finished_at", "trading_date", "mode", "status",
+            "universe_size", "candidates_count", "market_regime", "market_score",
+            "report_json", "error",
+        ]
+        placeholders = ",".join("?" for _ in columns)
+        connection.execute(
+            f"INSERT OR REPLACE INTO research_runs ({','.join(columns)}) VALUES ({placeholders})",
+            [values[column] for column in columns],
+        )
+    finally:
+        connection.close()
+
+
+def latest_research_run() -> dict | None:
+    connection = conn()
+    try:
+        row = connection.execute(
+            "SELECT * FROM research_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        columns = [
+            "run_id", "started_at", "finished_at", "trading_date", "mode", "status",
+            "universe_size", "candidates_count", "market_regime", "market_score",
+            "report_json", "error",
+        ]
+        return dict(zip(columns, row))
+    finally:
+        connection.close()
