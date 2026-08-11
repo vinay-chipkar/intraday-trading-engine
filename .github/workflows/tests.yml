@@ -2,7 +2,9 @@ name: tests
 
 on:
   push:
+    branches: [main, research-safety-and-news]
   pull_request:
+    branches: [main, research-safety-and-news]
 
 jobs:
   pytest:
@@ -14,4 +16,4 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
       - run: pip install -e .
-      - run: pytest
+      - run: pytest -q
