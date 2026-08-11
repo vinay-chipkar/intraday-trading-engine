@@ -5,6 +5,9 @@ import time
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
+from config.settings import settings
+from intraday_engine.market.ingestion import ingest_symbols
+from intraday_engine.research.daily_cycle import run_daily_cycle
 from intraday_engine.research.paper_observer import observe_once
 from intraday_engine.research.paper_outcomes import evaluate_pending, outcome_summary
 
@@ -17,7 +20,20 @@ def _now() -> datetime:
     return datetime.now(IST)
 
 
+def _refresh_candles() -> None:
+    results = ingest_symbols(interval=settings.candle_interval)
+    failed = [result for result in results if result.error]
+    inserted = sum(result.rows_inserted for result in results)
+    print(
+        f"DATA TICK {len(results) - len(failed)}/{len(results)} symbols ok "
+        f"new_candles={inserted}"
+    )
+    for result in failed:
+        print(f"DATA WARNING {result.symbol}: {result.error}")
+
+
 def _run_once(limit: int, min_score: float, max_holding_bars: int) -> None:
+    _refresh_candles()
     observed = observe_once(limit=limit, min_score=min_score)
     evaluation = evaluate_pending(max_holding_bars=max_holding_bars)
     summary = outcome_summary()
@@ -29,6 +45,23 @@ def _run_once(limit: int, min_score: float, max_holding_bars: int) -> None:
     )
 
 
+def _bootstrap(limit: int) -> None:
+    """Ensure instruments, premarket context, and initial candles exist after restart."""
+    print("PAPER BOOTSTRAP starting")
+    report = run_daily_cycle(mode="PAPER", limit=limit)
+    print(
+        f"PAPER BOOTSTRAP complete universe={report['universe_size']} "
+        f"candidates={report['candidate_count']}"
+    )
+
+
+def _finalize(max_holding_bars: int) -> None:
+    print("NSE market session closed; final paper evaluation")
+    evaluation = evaluate_pending(max_holding_bars=max_holding_bars)
+    summary = outcome_summary()
+    print(f"FINAL evaluation={evaluation} summary={summary}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the paper observer/evaluator repeatedly during NSE market hours"
@@ -38,6 +71,7 @@ def main() -> None:
     parser.add_argument("--min-score", type=float, default=60.0)
     parser.add_argument("--max-holding-bars", type=int, default=30)
     parser.add_argument("--once", action="store_true", help="Run one tick and exit")
+    parser.add_argument("--no-bootstrap", action="store_true", help="Skip startup instrument/premarket/data bootstrap")
     args = parser.parse_args()
 
     if args.interval < 1:
@@ -50,6 +84,8 @@ def main() -> None:
         raise ValueError("--max-holding-bars must be >= 1")
 
     if args.once:
+        if not args.no_bootstrap:
+            _bootstrap(args.limit)
         _run_once(args.limit, args.min_score, args.max_holding_bars)
         return
 
@@ -57,6 +93,8 @@ def main() -> None:
         f"PAPER SESSION started interval={args.interval}m "
         f"window={MARKET_OPEN.strftime('%H:%M')}-{MARKET_CLOSE.strftime('%H:%M')} IST"
     )
+    if not args.no_bootstrap:
+        _bootstrap(args.limit)
 
     while True:
         now = _now()
@@ -69,10 +107,7 @@ def main() -> None:
             continue
 
         if current >= MARKET_CLOSE:
-            print("NSE market session closed; final paper evaluation")
-            evaluation = evaluate_pending(max_holding_bars=args.max_holding_bars)
-            summary = outcome_summary()
-            print(f"FINAL evaluation={evaluation} summary={summary}")
+            _finalize(args.max_holding_bars)
             return
 
         started = time.monotonic()
