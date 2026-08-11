@@ -141,27 +141,48 @@ class UpstoxREST:
 
     @staticmethod
     def quote_metrics(quotes: dict) -> dict[str, dict[str, float | None]]:
-        """Normalize Upstox full-quote responses to LTP, previous close and change %."""
+        """Normalize full quotes using Upstox net_change when available.
+
+        Upstox full-quote `ohlc.close` is the current session close value, not
+        yesterday's close. Prefer explicit net_change plus last_price to derive
+        the prior close and percentage change. Fall back to prev_close only if
+        the provider supplies it explicitly.
+        """
         normalized: dict[str, dict[str, float | None]] = {}
         for key, raw in quotes.items():
             if not isinstance(raw, dict):
                 continue
-            ltp = raw.get("last_price", raw.get("ltp"))
-            ohlc = raw.get("ohlc") or {}
-            previous_close = raw.get("prev_close")
-            if previous_close is None:
-                previous_close = ohlc.get("close")
+
+            ltp_raw = raw.get("last_price", raw.get("ltp"))
+            net_change_raw = raw.get("net_change")
+            prev_close_raw = raw.get("prev_close")
+
             try:
-                ltp = float(ltp) if ltp is not None else None
-                previous_close = float(previous_close) if previous_close is not None else None
+                ltp = float(ltp_raw) if ltp_raw is not None else None
             except (TypeError, ValueError):
-                ltp, previous_close = None, None
+                ltp = None
+
+            try:
+                net_change = float(net_change_raw) if net_change_raw is not None else None
+            except (TypeError, ValueError):
+                net_change = None
+
+            try:
+                previous_close = float(prev_close_raw) if prev_close_raw is not None else None
+            except (TypeError, ValueError):
+                previous_close = None
+
+            if previous_close is None and ltp is not None and net_change is not None:
+                previous_close = ltp - net_change
+
             change_pct = None
-            if ltp is not None and previous_close not in (None, 0):
+            if previous_close not in (None, 0) and ltp is not None:
                 change_pct = (ltp / previous_close - 1.0) * 100.0
+
             normalized[key] = {
                 "ltp": ltp,
                 "previous_close": previous_close,
+                "net_change": net_change,
                 "change_pct": change_pct,
             }
         return normalized
