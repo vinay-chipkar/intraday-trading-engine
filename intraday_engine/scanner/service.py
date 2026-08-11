@@ -102,11 +102,7 @@ def _instrument_rows() -> pd.DataFrame:
 
 
 def _ensure_instrument_master(client: UpstoxREST) -> pd.DataFrame:
-    """Ensure every configured symbol is represented in instrument_master.
-
-    The legacy database may contain only a subset of the configured universe.
-    Missing symbols are resolved here before any quote or ranking work begins.
-    """
+    """Ensure every configured symbol is represented in instrument_master."""
     configured = list(dict.fromkeys(load_symbols()))
     existing = _instrument_rows()
     existing_symbols = set(existing["symbol"].astype(str).str.upper()) if not existing.empty else set()
@@ -177,8 +173,10 @@ def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -
         history = liquidity_map.get(symbol, {})
         avg_volume = float(history.get("avg_daily_volume") or 0.0)
         avg_value = float(history.get("avg_daily_traded_value") or 0.0)
-        if avg_value < config.minimum_avg_daily_traded_value:
-            continue
+        history_days = int(history.get("history_days") or 0)
+        # Missing historical candles are a data-quality flag, not a reason to
+        # silently remove a live-quoted stock from the research universe.
+        # Such rows receive conservative zero-history RVOL/liquidity scores.
 
         news_row = news_map.get(symbol, {})
         ohlc = raw.get("ohlc") or {}
@@ -199,59 +197,47 @@ def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -
                 "news_count": int(news_row.get("news_count") or 0),
                 "high_impact_news_count": int(news_row.get("high_impact_news_count") or 0),
                 "elapsed_session_minutes": elapsed,
-                "history_days": int(history.get("history_days") or 0),
+                "history_days": history_days,
             }
         )
     return rows
 
 
-def scan_universe(
-    client: UpstoxREST,
-    config: ScannerConfig | None = None,
-    trading_date: date | None = None,
-) -> list[dict]:
-    """Score every eligible instrument and persist every ranked row."""
+def scan_universe(client: UpstoxREST, config: ScannerConfig | None = None, trading_date: date | None = None) -> list[dict]:
+    """Score every quoted eligible instrument and persist every ranked row."""
     config = config or ScannerConfig()
     captured_at = datetime.now(IST)
     trading_date = trading_date or captured_at.date()
     rows = _build_rows(client, config, trading_date)
     if not rows:
         return []
-
     ranked = rank_candidates(rows, market_score=latest_market_score(), limit=None)
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
-
-    candidate_df = pd.DataFrame(
-        [
-            {
-                "event_time": captured_at,
-                "trading_date": trading_date,
-                "symbol": row["symbol"],
-                "instrument_key": row["instrument_key"],
-                "ltp": row["ltp"],
-                "volume": row["cumulative_volume"],
-                "relative_volume": row["relative_volume"],
-                "price_change_pct": row["change_pct"],
-                "vwap": row.get("vwap"),
-                "candidate_score": row["candidate_score"],
-                "reason": row["reason"],
-                "news_score": row.get("news_score", 0.0),
-                "news_count": row.get("news_count", 0),
-                "high_impact_news_count": row.get("high_impact_news_count", 0),
-            }
-            for row in ranked
-        ]
-    )
+    candidate_df = pd.DataFrame([
+        {
+            "event_time": captured_at,
+            "trading_date": trading_date,
+            "symbol": row["symbol"],
+            "instrument_key": row["instrument_key"],
+            "ltp": row["ltp"],
+            "volume": row["cumulative_volume"],
+            "relative_volume": row["relative_volume"],
+            "price_change_pct": row["change_pct"],
+            "vwap": row.get("vwap"),
+            "candidate_score": row["candidate_score"],
+            "reason": row["reason"],
+            "news_score": row.get("news_score", 0.0),
+            "news_count": row.get("news_count", 0),
+            "high_impact_news_count": row.get("high_impact_news_count", 0),
+        }
+        for row in ranked
+    ])
     insert_df("candidate_events", candidate_df)
     return ranked
 
 
-def scan_top10(
-    client: UpstoxREST,
-    config: ScannerConfig | None = None,
-    trading_date: date | None = None,
-) -> list[dict]:
+def scan_top10(client: UpstoxREST, config: ScannerConfig | None = None, trading_date: date | None = None) -> list[dict]:
     """Return the top-N shortlist while recording the full universe first."""
     config = config or ScannerConfig()
     ranked = scan_universe(client, config, trading_date)
