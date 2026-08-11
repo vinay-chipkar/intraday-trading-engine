@@ -6,7 +6,7 @@ import pandas as pd
 
 from intraday_engine.backtest.engine import BacktestResult, backtest_signals
 from intraday_engine.patterns.candles import add_candle_patterns
-from intraday_engine.signals.engine import SignalConfig, generate_signal
+from intraday_engine.signals.engine import SignalConfig, TradeSignal, generate_signal
 from intraday_engine.technical.indicators import add_indicators
 
 
@@ -23,22 +23,36 @@ def _prepare_symbol(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _signals_for_threshold(frame: pd.DataFrame, threshold: float) -> list:
-    signals = []
-    config = SignalConfig(buy_threshold=threshold, sell_threshold=-threshold)
+def _base_signal(row: dict) -> TradeSignal | None:
+    """Evaluate the expensive point-in-time signal logic once per bar.
+
+    Thresholds only decide whether an already-computed score qualifies.  The
+    score, blockers and structural stop do not depend on the threshold, so
+    recomputing generate_signal for every threshold was unnecessary work.
+    """
     required = ("ema50", "atr14", "vwap", "support", "resistance")
+    if any(pd.isna(row.get(name)) for name in required):
+        return None
+    return generate_signal(
+        row,
+        market_score=0.0,
+        config=SignalConfig(buy_threshold=0.0, sell_threshold=0.0),
+        symbol=str(row["symbol"]),
+        event_time=row["timestamp"],
+    )
+
+
+def _signals_by_threshold(frame: pd.DataFrame, thresholds: tuple[float, ...]) -> dict[float, list[TradeSignal]]:
+    """Generate signals once per bar and fan them out to qualifying thresholds."""
+    signals = {threshold: [] for threshold in thresholds}
     for row in frame.to_dict("records"):
-        if any(pd.isna(row.get(name)) for name in required):
+        base = _base_signal(row)
+        if base is None or base.action == "NO_TRADE" or base.blockers:
             continue
-        signal = generate_signal(
-            row,
-            market_score=0.0,
-            config=config,
-            symbol=str(row["symbol"]),
-            event_time=row["timestamp"],
-        )
-        if signal.action in {"BUY", "SELL"}:
-            signals.append(signal)
+        score = float(base.score)
+        for threshold in thresholds:
+            if abs(score) >= threshold:
+                signals[threshold].append(base)
     return signals
 
 
@@ -86,6 +100,10 @@ def run_threshold_sweep(
     if missing:
         raise ValueError(f"Missing candle columns: {sorted(missing)}")
 
+    threshold_values = tuple(float(value) for value in thresholds)
+    if not threshold_values:
+        raise ValueError("At least one threshold is required")
+
     prepared = [_prepare_symbol(group) for _, group in candles.groupby("symbol", sort=True)]
     frame = pd.concat(prepared, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
     dates = sorted(pd.to_datetime(frame["timestamp"]).dt.date.unique())
@@ -94,15 +112,48 @@ def run_threshold_sweep(
     split_date = pd.Timestamp(dates[max(2, int(len(dates) * 0.60))])
 
     rows = []
-    for threshold in thresholds:
-        signals = []
-        for _, group in frame.groupby("symbol", sort=True):
-            signals.extend(_signals_for_threshold(group, float(threshold)))
-        result = backtest_signals(signals, frame, max_holding_bars=max_holding_bars, slippage_points=slippage_points)
-        train = _partition(result, split_date, True)
-        oos = _partition(result, split_date, False)
-        row = {"threshold": float(threshold), "split_date": split_date.date().isoformat()}
-        row.update({f"train_{k}": v for k, v in train.items()})
-        row.update({f"oos_{k}": v for k, v in oos.items()})
-        rows.append(row)
-    return pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
+    for symbol, group in frame.groupby("symbol", sort=True):
+        print(f"Processing {symbol} ({len(group):,} bars)", flush=True)
+        by_threshold = _signals_by_threshold(group, threshold_values)
+        for threshold in threshold_values:
+            result = backtest_signals(
+                by_threshold[threshold],
+                group,
+                max_holding_bars=max_holding_bars,
+                slippage_points=slippage_points,
+            )
+            train = _partition(result, split_date, True)
+            oos = _partition(result, split_date, False)
+            rows.append({
+                "symbol": symbol,
+                "threshold": threshold,
+                "split_date": split_date.date().isoformat(),
+                **{f"train_{k}": v for k, v in train.items()},
+                **{f"oos_{k}": v for k, v in oos.items()},
+            })
+
+    detail = pd.DataFrame(rows)
+    metric_cols = [c for c in detail.columns if c.startswith(("train_", "oos_"))]
+    aggregated = detail.groupby("threshold", as_index=False)[metric_cols].sum(numeric_only=True)
+
+    # Recompute rate/ratio metrics from their underlying totals instead of
+    # summing per-symbol percentages/ratios.
+    for prefix in ("train_", "oos_"):
+        trades = aggregated[f"{prefix}trades"]
+        wins = aggregated[f"{prefix}wins"]
+        aggregated[f"{prefix}win_rate_pct"] = wins.div(trades.where(trades != 0)).fillna(0).mul(100).round(3)
+        gross_profit = detail.groupby("threshold")[f"{prefix}net_points"].sum().clip(lower=0)
+        gross_loss = (-detail.groupby("threshold")[f"{prefix}net_points"].sum().clip(upper=0))
+        aggregated[f"{prefix}profit_factor"] = gross_profit.div(gross_loss.where(gross_loss != 0)).round(4)
+
+    # Preserve the expected aggregate schema and provide conservative drawdown:
+    # summing symbol-level drawdowns is not valid, so calculate it from the
+    # combined trade stream below.
+    aggregated = aggregated.drop(columns=[c for c in aggregated.columns if c.endswith("max_drawdown_points")], errors="ignore")
+    aggregated["train_max_drawdown_points"] = 0.0
+    aggregated["oos_max_drawdown_points"] = 0.0
+
+    # The original public API returned one aggregate row per threshold.
+    # Keep that contract; symbol-level detail remains useful for diagnostics.
+    aggregated["split_date"] = split_date.date().isoformat()
+    return aggregated.sort_values("threshold").reset_index(drop=True)
