@@ -72,7 +72,9 @@ def _news_component(news_score: float, market_score: float) -> tuple[float, str 
     return component, "NEWS_WEAK"
 
 
-def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int = 10) -> list[dict]:
+def rank_candidates(
+    rows: Iterable[dict], market_score: float = 0.0, limit: int | None = 10
+) -> list[dict]:
     """Score and rank liquid intraday candidates.
 
     Expected row fields:
@@ -83,6 +85,8 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
     compared with average full-day volume scaled by elapsed NSE session time.
     This is deliberately explicit so it can later be replaced by a same-minute
     historical RVOL model without changing the scanner contract.
+
+    ``limit=None`` ranks the complete eligible universe without truncation.
     """
     rows = [dict(row) for row in rows]
     if not rows:
@@ -164,6 +168,7 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
         )
 
     ranked.sort(key=lambda r: (-r["candidate_score"], -abs(r["change_pct"]), r["symbol"]))
-    for rank, row in enumerate(ranked[:limit], start=1):
+    output = ranked if limit is None else ranked[:limit]
+    for rank, row in enumerate(output, start=1):
         row["rank"] = rank
-    return ranked[:limit]
+    return output
