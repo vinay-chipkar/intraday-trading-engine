@@ -70,7 +70,9 @@ def _news_component(news_score: float, market_score: float) -> tuple[float, str 
 def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int | None = 10) -> list[dict]:
     """Score and optionally rank/truncate intraday candidates.
 
-    Pass ``limit=None`` to return and rank the complete eligible universe.
+    Incomplete historical data is retained for research, but cannot receive
+    normal RVOL/liquidity scoring or outrank data-complete candidates.
+    Pass ``limit=None`` to return the complete universe.
     """
     rows = [dict(row) for row in rows]
     if not rows:
@@ -97,16 +99,19 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
         day_high = float(row.get("day_high") or ltp)
         day_low = float(row.get("day_low") or ltp)
         news_score = float(row.get("news_score") or 0.0)
+        history_days = int(row.get("history_days") or 0)
+        required_history_days = int(row.get("required_history_days") or 20)
+        history_complete = history_days >= required_history_days
 
         change_pct = row.get("change_pct")
         if change_pct is None and previous_close:
             change_pct = (ltp / previous_close - 1.0) * 100.0
         change_pct = float(change_pct or 0.0)
 
-        expected_volume = avg_volume * fraction
+        expected_volume = avg_volume * fraction if history_complete else 0.0
         rvol = volume / expected_volume if expected_volume > 0 else 0.0
         day_range_pct = ((day_high - day_low) / ltp * 100.0) if ltp > 0 else 0.0
-        liquidity_pct = _percentile(liquidity_values, avg_value)
+        liquidity_pct = _percentile(liquidity_values, avg_value) if history_complete else 0.0
         liquidity_score = 20.0 * liquidity_pct
         news_component, news_reason = _news_component(news_score, market_score)
         score = liquidity_score + _rvol_score(rvol) + _momentum_score(change_pct, market_score) + _volatility_score(day_range_pct) + news_component
@@ -126,6 +131,11 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
             reasons.append("HEALTHY_INTRADAY_RANGE")
         if news_reason:
             reasons.append(news_reason)
+        if not history_complete:
+            reasons.append("DATA_INCOMPLETE")
+            # Keep incomplete rows visible in the research universe, but cap
+            # their score so they cannot displace data-complete candidates.
+            score = min(score, 9.999)
 
         ranked.append({
             **row,
@@ -134,6 +144,10 @@ def rank_candidates(rows: Iterable[dict], market_score: float = 0.0, limit: int 
             "day_range_pct": round(day_range_pct, 6),
             "liquidity_percentile": round(liquidity_pct, 6),
             "news_score": round(news_score, 6),
+            "history_complete": history_complete,
+            "data_quality": "COMPLETE" if history_complete else ("PARTIAL" if history_days > 0 else "MISSING_HISTORY"),
+            "rvol_valid": history_complete,
+            "liquidity_valid": history_complete,
             "candidate_score": round(max(0.0, min(100.0, score)), 6),
             "reason": ",".join(reasons) if reasons else "NO_STRONG_FACTOR",
         })
