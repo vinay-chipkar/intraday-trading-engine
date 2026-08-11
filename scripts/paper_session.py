@@ -20,6 +20,14 @@ def _now() -> datetime:
     return datetime.now(IST)
 
 
+def _parse_clock(value: str) -> dt_time:
+    try:
+        hour, minute = (int(part) for part in value.split(":", 1))
+        return dt_time(hour, minute)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--until must use HH:MM") from exc
+
+
 def _refresh_candles() -> None:
     results = ingest_symbols(interval=settings.candle_interval)
     failed = [result for result in results if result.error]
@@ -46,7 +54,6 @@ def _run_once(limit: int, min_score: float, max_holding_bars: int) -> None:
 
 
 def _bootstrap(limit: int) -> None:
-    """Ensure instruments, premarket context, and initial candles exist after restart."""
     print("PAPER BOOTSTRAP starting")
     report = run_daily_cycle(mode="PAPER", limit=limit)
     print(
@@ -56,7 +63,7 @@ def _bootstrap(limit: int) -> None:
 
 
 def _finalize(max_holding_bars: int) -> None:
-    print("NSE market session closed; final paper evaluation")
+    print("PAPER WINDOW CLOSED; final paper evaluation")
     evaluation = evaluate_pending(max_holding_bars=max_holding_bars)
     summary = outcome_summary()
     print(f"FINAL evaluation={evaluation} summary={summary}")
@@ -72,6 +79,7 @@ def main() -> None:
     parser.add_argument("--max-holding-bars", type=int, default=30)
     parser.add_argument("--once", action="store_true", help="Run one tick and exit")
     parser.add_argument("--no-bootstrap", action="store_true", help="Skip startup instrument/premarket/data bootstrap")
+    parser.add_argument("--until", default=None, help="Stop this runner window at HH:MM IST")
     args = parser.parse_args()
 
     if args.interval < 1:
@@ -82,6 +90,9 @@ def main() -> None:
         raise ValueError("--min-score must be >= 0")
     if args.max_holding_bars < 1:
         raise ValueError("--max-holding-bars must be >= 1")
+    until = _parse_clock(args.until) if args.until else MARKET_CLOSE
+    if until <= MARKET_OPEN or until > MARKET_CLOSE:
+        raise ValueError("--until must be after 09:15 and no later than 15:30")
 
     if args.once:
         if not args.no_bootstrap:
@@ -91,7 +102,7 @@ def main() -> None:
 
     print(
         f"PAPER SESSION started interval={args.interval}m "
-        f"window={MARKET_OPEN.strftime('%H:%M')}-{MARKET_CLOSE.strftime('%H:%M')} IST"
+        f"window={MARKET_OPEN.strftime('%H:%M')}-{until.strftime('%H:%M')} IST"
     )
     if not args.no_bootstrap:
         _bootstrap(args.limit)
@@ -106,7 +117,7 @@ def main() -> None:
             time.sleep(min(wait_seconds, 60))
             continue
 
-        if current >= MARKET_CLOSE:
+        if current >= until:
             _finalize(args.max_holding_bars)
             return
 
