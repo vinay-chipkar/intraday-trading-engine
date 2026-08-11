@@ -1,4 +1,3 @@
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,8 +14,11 @@ def test_paper_session_rejects_invalid_interval(monkeypatch):
         paper_session.main()
 
 
-def test_paper_session_once_runs_observe_evaluate_and_summary(monkeypatch, capsys):
+def test_paper_session_once_runs_bootstrap_refresh_observe_evaluate_and_summary(monkeypatch, capsys):
     calls = []
+
+    monkeypatch.setattr(paper_session, "_bootstrap", lambda limit: calls.append(("bootstrap", limit)))
+    monkeypatch.setattr(paper_session, "_refresh_candles", lambda: calls.append(("refresh",)))
 
     def fake_observe_once(*, limit, min_score):
         calls.append(("observe", limit, min_score))
@@ -37,7 +39,13 @@ def test_paper_session_once_runs_observe_evaluate_and_summary(monkeypatch, capsy
 
     paper_session.main()
 
-    assert calls == [("observe", 5, 55.0), ("evaluate", 20), ("summary",)]
+    assert calls == [
+        ("bootstrap", 5),
+        ("refresh",),
+        ("observe", 5, 55.0),
+        ("evaluate", 20),
+        ("summary",),
+    ]
     assert "PAPER TICK observed=1 evaluated=1 waiting=0 total=1 wins=1 losses=0 avg_r=1.5000" in capsys.readouterr().out
 
 
