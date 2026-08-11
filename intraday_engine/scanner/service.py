@@ -17,7 +17,7 @@ SESSION_CLOSE = time(15, 30)
 
 @dataclass(frozen=True)
 class ScannerConfig:
-    limit: int = 10
+    limit: int | None = 10
     lookback_days: int = 20
     minimum_price: float = 50.0
     minimum_avg_daily_traded_value: float = 50_000_000.0
@@ -100,19 +100,8 @@ def _instrument_rows() -> pd.DataFrame:
         connection.close()
 
 
-def scan_top10(
-    client: UpstoxREST,
-    config: ScannerConfig | None = None,
-    trading_date: date | None = None,
-) -> list[dict]:
-    """Build the current NSE candidate list from stored history plus live quotes.
-
-    The scanner deliberately does not create a BUY/SELL signal. It produces a
-    ranked research universe for the downstream technical/signal engine.
-    """
-    config = config or ScannerConfig()
+def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -> list[dict]:
     captured_at = datetime.now(IST)
-    trading_date = trading_date or captured_at.date()
     instruments = _instrument_rows()
     if instruments.empty:
         return []
@@ -136,7 +125,6 @@ def scan_top10(
     liquidity_map = liquidity.set_index("symbol").to_dict("index") if not liquidity.empty else {}
     vwap_map = vwap.set_index("symbol")["vwap"].to_dict() if not vwap.empty else {}
     news_map = news.set_index("symbol").to_dict("index") if not news.empty else {}
-    market_score = latest_market_score()
 
     rows: list[dict] = []
     elapsed = _elapsed_minutes(captured_at)
@@ -179,10 +167,25 @@ def scan_top10(
                 "history_days": int(history.get("history_days") or 0),
             }
         )
+    return rows
 
-    ranked = rank_candidates(rows, market_score=market_score, limit=config.limit)
-    if not ranked:
+
+def scan_universe(
+    client: UpstoxREST,
+    config: ScannerConfig | None = None,
+    trading_date: date | None = None,
+) -> list[dict]:
+    """Score every eligible instrument and persist every ranked row."""
+    config = config or ScannerConfig()
+    captured_at = datetime.now(IST)
+    trading_date = trading_date or captured_at.date()
+    rows = _build_rows(client, config, trading_date)
+    if not rows:
         return []
+
+    ranked = rank_candidates(rows, market_score=latest_market_score(), limit=None)
+    for rank, row in enumerate(ranked, start=1):
+        row["rank"] = rank
 
     candidate_df = pd.DataFrame(
         [
@@ -207,3 +210,15 @@ def scan_top10(
     )
     insert_df("candidate_events", candidate_df)
     return ranked
+
+
+def scan_top10(
+    client: UpstoxREST,
+    config: ScannerConfig | None = None,
+    trading_date: date | None = None,
+) -> list[dict]:
+    """Return the top-N shortlist while recording the full universe first."""
+    config = config or ScannerConfig()
+    ranked = scan_universe(client, config, trading_date)
+    limit = config.limit if config.limit and config.limit > 0 else len(ranked)
+    return ranked[:limit]
