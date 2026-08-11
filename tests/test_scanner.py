@@ -14,6 +14,8 @@ def row(symbol, change, rvol, liquidity, day_range=2.0):
         "day_high": 100.0 + day_range / 2,
         "day_low": 100.0 - day_range / 2,
         "elapsed_session_minutes": 375.0,
+        "history_days": 20,
+        "required_history_days": 20,
     }
 
 
