@@ -6,8 +6,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from intraday_engine.market.universe import load_symbols
 from intraday_engine.market.upstox import UpstoxREST
-from intraday_engine.storage.db import conn, insert_df, latest_market_score, latest_symbol_news_scores
+from intraday_engine.storage.db import conn, insert_df, latest_market_score, latest_symbol_news_scores, upsert_instruments
 from .ranking import rank_candidates
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -100,9 +101,43 @@ def _instrument_rows() -> pd.DataFrame:
         connection.close()
 
 
+def _ensure_instrument_master(client: UpstoxREST) -> pd.DataFrame:
+    """Ensure the scanner's configured universe has instrument keys before quoting.
+
+    The database may have been initialized with only a small legacy subset. The
+    scanner must not silently treat that subset as the whole universe.
+    """
+    configured = list(dict.fromkeys(load_symbols()))
+    existing = _instrument_rows()
+    existing_symbols = set(existing["symbol"].astype(str).str.upper()) if not existing.empty else set()
+    missing = [symbol for symbol in configured if symbol not in existing_symbols]
+
+    if missing:
+        rows: list[dict] = []
+        for symbol in missing:
+            try:
+                resolved = client.resolve_equity(symbol)
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "instrument_key": resolved["instrument_key"],
+                        "name": resolved.get("name"),
+                        "trading_symbol": resolved.get("trading_symbol"),
+                        "updated_at": pd.Timestamp.now(tz="Asia/Kolkata"),
+                    }
+                )
+            except Exception as exc:
+                print(f"WARN {symbol}: unable to resolve instrument: {exc}")
+        if rows:
+            upsert_instruments(pd.DataFrame(rows))
+            existing = _instrument_rows()
+
+    return existing
+
+
 def _build_rows(client: UpstoxREST, config: ScannerConfig, trading_date: date) -> list[dict]:
     captured_at = datetime.now(IST)
-    instruments = _instrument_rows()
+    instruments = _ensure_instrument_master(client)
     if instruments.empty:
         return []
 
