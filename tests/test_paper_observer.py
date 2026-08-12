@@ -1,6 +1,6 @@
 import pandas as pd
 
-from intraday_engine.research.paper_observer import build_observation
+from intraday_engine.research.paper_observer import build_observation, is_bar_stale
 from intraday_engine.signals.engine import TradeSignal
 
 
@@ -63,3 +63,37 @@ def test_signal_observation_records_trade_plan():
     assert row["entry_price"] == 100.0
     assert row["stop_loss"] == 101.0
     assert row["target"] == 98.5
+
+
+def test_is_bar_stale_detects_a_prior_trading_day_bar():
+    # Reproduces the real 2026-08-12 incident: intraday ingestion for today
+    # never ran, so the last available 1m bar for HINDALCO/SBIN/TCS was from
+    # 2026-08-11, while the scanner candidate was already scored from live,
+    # same-day quotes.
+    assert is_bar_stale(pd.Timestamp("2026-08-11 05:56:00+00:00"), trading_date=pd.Timestamp("2026-08-12").date())
+
+
+def test_is_bar_stale_false_for_a_same_day_bar():
+    assert not is_bar_stale(pd.Timestamp("2026-08-12 04:10:00+00:00"), trading_date=pd.Timestamp("2026-08-12").date())
+
+
+def test_stale_bar_forces_stale_status_and_strips_any_trade_plan():
+    # Even if generate_signal happened to return an actionable BUY/SELL from a
+    # stale (wrong trading day) bar, it must never be surfaced as a real trade
+    # plan -- the signal is about a day that has already closed, not "now".
+    row = build_observation(
+        observed_at=pd.Timestamp("2026-08-12 10:25:00+05:30"),
+        trading_date=pd.Timestamp("2026-08-12").date(),
+        candidate=_candidate(),
+        signal=_signal("SELL"),
+        market_regime="NEUTRAL",
+        market_score=1.07,
+        bar_time=pd.Timestamp("2026-08-11 04:55:00+00:00"),
+        stale=True,
+    )
+    assert row["status"] == "STALE_DATA"
+    assert row["entry_price"] is None
+    assert row["stop_loss"] is None
+    assert row["target"] is None
+    # the raw signal action/score are preserved for diagnostics, just not acted on
+    assert row["signal_action"] == "SELL"

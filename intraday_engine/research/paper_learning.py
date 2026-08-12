@@ -114,13 +114,17 @@ def learning_report(trading_date: date | None = None) -> dict:
     try:
         date_filter = "" if trading_date is None else "WHERE trading_date = ?"
         params = [] if trading_date is None else [trading_date]
+        # paper_failure_analysis denormalizes pnl_points/r_multiple from
+        # paper_outcomes (both tables carry them), so unqualified references
+        # here are ambiguous to the SQL binder -- qualify explicitly. mfe/mae
+        # only exist on paper_outcomes, hence the join.
         summary = connection.execute(
             f"""
             SELECT failure_class, COUNT(*) AS trades,
-                   AVG(r_multiple) AS avg_r,
-                   SUM(pnl_points) AS net_points,
-                   AVG(mfe_points) AS avg_mfe,
-                   AVG(mae_points) AS avg_mae
+                   AVG(f.r_multiple) AS avg_r,
+                   SUM(f.pnl_points) AS net_points,
+                   AVG(p.mfe_points) AS avg_mfe,
+                   AVG(p.mae_points) AS avg_mae
             FROM paper_failure_analysis f
             JOIN paper_outcomes p USING (observation_id)
             {date_filter}

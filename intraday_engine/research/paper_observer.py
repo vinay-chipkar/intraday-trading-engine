@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -12,6 +13,25 @@ from intraday_engine.scanner.service import ScannerConfig, scan_top10
 from intraday_engine.signals.engine import SignalConfig, TradeSignal, generate_signal
 from intraday_engine.storage.db import conn
 from intraday_engine.strategy.point_in_time import enrich_point_in_time
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def is_bar_stale(bar_time: object, trading_date: date) -> bool:
+    """True if the point-in-time bar used for a signal predates the trading day.
+
+    The scanner scores candidates from live Upstox quotes, but the signal engine
+    is fed from locally-stored 1m candles (`_load_bars`) with no freshness check
+    of its own -- if intraday ingestion for `trading_date` hasn't run yet (or
+    failed), `_signal_for_symbol` silently scores the *previous* trading day's
+    last bar as if it were "now", against a candidate whose score/RVOL/momentum
+    are all from today. That produces a signal that looks like a legitimate
+    rejection of today's setup but is actually blind to today's price action
+    entirely.
+    """
+    ts = pd.Timestamp(bar_time)
+    bar_date = ts.tz_convert(IST).date() if ts.tzinfo is not None else ts.date()
+    return bar_date < trading_date
 
 
 OBSERVATION_SCHEMA = """
@@ -63,8 +83,20 @@ def build_observation(
     market_regime: str | None,
     market_score: float | None,
     bar_time: object,
+    stale: bool = False,
 ) -> dict:
     action = signal.action
+    # A stale bar means the signal was computed from a prior trading day's data,
+    # not today's -- it must never be surfaced as an actionable trade plan (see
+    # is_bar_stale for why), regardless of what action/score generate_signal
+    # happened to return for that (wrong-day) input.
+    actionable = action in {"BUY", "SELL"} and not stale
+    if stale:
+        status = "STALE_DATA"
+    elif actionable:
+        status = "SIGNAL_PENDING"
+    else:
+        status = "NO_SIGNAL"
     return {
         "observation_id": f"obs-{uuid.uuid4().hex}",
         "observed_at": observed_at,
@@ -82,12 +114,12 @@ def build_observation(
         "signal_action": action,
         "signal_score": float(signal.score),
         "confidence": float(signal.confidence),
-        "entry_price": signal.entry if action in {"BUY", "SELL"} else None,
-        "stop_loss": signal.stop_loss if action in {"BUY", "SELL"} else None,
-        "target": signal.target if action in {"BUY", "SELL"} else None,
+        "entry_price": signal.entry if actionable else None,
+        "stop_loss": signal.stop_loss if actionable else None,
+        "target": signal.target if actionable else None,
         "signal_reasons": _json_tuple(signal.reasons),
         "signal_blockers": _json_tuple(signal.blockers),
-        "status": "SIGNAL_PENDING" if action in {"BUY", "SELL"} else "NO_SIGNAL",
+        "status": status,
     }
 
 
@@ -175,6 +207,7 @@ def observe_once(
                 market_regime=context.get("regime"),
                 market_score=market_score,
                 bar_time=bar_time,
+                stale=is_bar_stale(bar_time, trading_date),
             )
         )
     persist_observations(rows)
