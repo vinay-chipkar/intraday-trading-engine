@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
+import uuid
 
 from intraday_engine.market.candles import normalize_candles, quality_report
 from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.storage.db import (
+    conn,
     get_instruments,
     insert_candles,
     latest_candle_timestamp,
@@ -105,7 +108,91 @@ def ingest_symbol(
         )
 
 
+def _record_ingestion_run(
+    *, started_at: datetime, interval: str, requested: int, results: list[IngestionResult]
+) -> None:
+    """Persist one ingestion_runs row summarizing this batch.
+
+    Written unconditionally, before the caller's assess_ingestion_results can
+    raise, so a total/near-total failure still leaves a historical record for
+    research/monitoring.py to detect a sustained-failure pattern later --
+    previously this table existed in the schema but nothing ever wrote to it.
+    """
+    failed = [result for result in results if result.error]
+    successful = len(results) - len(failed)
+    if not results:
+        status = "FAILED"
+    elif not failed:
+        status = "SUCCESS"
+    elif successful == 0:
+        status = "FAILED"
+    else:
+        status = "PARTIAL"
+    connection = conn()
+    try:
+        connection.execute(
+            "INSERT INTO ingestion_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                f"ing-{uuid.uuid4().hex}",
+                started_at,
+                datetime.now(timezone.utc),
+                "PAPER",
+                interval,
+                requested,
+                successful,
+                sum(result.rows_received for result in results),
+                sum(result.rows_inserted for result in results),
+                status,
+                "; ".join(f"{r.symbol}: {r.error}" for r in failed) or None,
+            ],
+        )
+    finally:
+        connection.close()
+
+
+def _record_data_quality_events(results: list[IngestionResult]) -> None:
+    """Persist one data_quality_events row per symbol with a detected issue.
+
+    quality_report() already computes these metrics per symbol during
+    ingest_symbol(); previously the result was only used to decide whether to
+    proceed, never stored, so there was no history to look back over.
+    """
+    flagged = [
+        result
+        for result in results
+        if result.quality
+        and (
+            result.quality.get("duplicates")
+            or result.quality.get("invalid_ohlc")
+            or result.quality.get("negative_volume")
+            or result.quality.get("null_timestamps")
+            or result.quality.get("monotonic") is False
+        )
+    ]
+    if not flagged:
+        return
+    event_time = datetime.now(timezone.utc)
+    connection = conn()
+    try:
+        for result in flagged:
+            issues = {k: v for k, v in result.quality.items() if k != "rows"}
+            connection.execute(
+                "INSERT INTO data_quality_events VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    event_time,
+                    result.symbol,
+                    None,
+                    result.last_timestamp,
+                    "INGESTION_QUALITY",
+                    str(issues),
+                ],
+            )
+    finally:
+        connection.close()
+
+
 def ingest_symbols(symbols: list[str] | None = None, interval: int = 1) -> list[IngestionResult]:
+    started_at = datetime.now(timezone.utc)
     api = UpstoxREST()
     instruments = get_instruments(symbols)
     if instruments.empty:
@@ -121,4 +208,8 @@ def ingest_symbols(symbols: list[str] | None = None, interval: int = 1) -> list[
                 interval=interval,
             )
         )
+    _record_ingestion_run(
+        started_at=started_at, interval=f"{interval}m", requested=len(instruments), results=results
+    )
+    _record_data_quality_events(results)
     return results

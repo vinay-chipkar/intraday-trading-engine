@@ -8,7 +8,8 @@ on:
       timezone: 'Asia/Kolkata'
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 concurrency:
   group: paper-research-cycle
@@ -30,8 +31,39 @@ jobs:
       - name: Install project
         run: pip install -e .
 
-      - name: Restore historical paper journal
-        run: python -m scripts.restore_paper_journal --input research_data
+      # The Parquet warehouse (intraday_engine/storage/warehouse) is durable
+      # cross-day state. It is never committed to git -- it lives as a GitHub
+      # Actions artifact today (interim; the persist/restore code only knows
+      # about a local directory, so swapping this for real object storage
+      # later is a workflow change, not a research-logic change). A missing
+      # artifact is only expected on the very first run ever; anything else
+      # (corrupt/incompatible warehouse) must fail the job, not proceed silently.
+      - name: Locate latest warehouse artifact
+        id: warehouse_lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p data/warehouse
+          ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" --paginate \
+            --jq '[.artifacts[] | select(.name == "warehouse" and .expired == false)] | sort_by(.created_at) | last | .id // empty')
+          echo "artifact_id=${ARTIFACT_ID}" >> "$GITHUB_OUTPUT"
+          if [ -n "$ARTIFACT_ID" ]; then
+            echo "Found existing warehouse artifact id=${ARTIFACT_ID}"
+          else
+            echo "No existing warehouse artifact found -- treating this as the first run"
+          fi
+
+      - name: Download and restore warehouse
+        if: steps.warehouse_lookup.outputs.artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/actions/artifacts/${{ steps.warehouse_lookup.outputs.artifact_id }}/zip" > warehouse.zip
+          unzip -q warehouse.zip -d data/warehouse
+          rm warehouse.zip
+          python -m scripts.warehouse_restore --root data/warehouse --target data/trading.duckdb
 
       - name: Run paper daily bootstrap
         env:
@@ -43,11 +75,17 @@ jobs:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
         run: python -m scripts.paper_session --interval 5 --until 12:00 --no-bootstrap
 
+      # Both the growing DuckDB *and* the (mostly-unchanged) warehouse
+      # directory travel to the afternoon job together, so the afternoon
+      # job's persist step can skip every partition that hasn't changed
+      # today instead of re-exporting the whole history from scratch.
       - name: Upload midday state
         uses: actions/upload-artifact@v4
         with:
           name: paper-midday-state
-          path: data/trading.duckdb
+          path: |
+            data/trading.duckdb
+            data/warehouse
           retention-days: 2
           if-no-files-found: error
 
@@ -83,14 +121,49 @@ jobs:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
         run: python -m scripts.paper_close --output research_data
 
-      - name: Commit research journal
-        run: |
-          git config user.name 'paper-research-bot'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add research_data
-          if git diff --cached --quiet; then
-            echo 'No research data changes to commit'
-          else
-            git commit -m "chore: update paper research journal"
-            git push
-          fi
+      # Turns today's newly-EVALUATED paper observations into point-in-time
+      # feature snapshots + training labels (idempotent -- already-processed
+      # observations are skipped every time). No model training happens here.
+      - name: Build learning data (feature snapshots + training labels)
+        run: python -m scripts.build_learning_data
+
+      # Aggregate diagnostics over everything evaluated so far (idempotent --
+      # a no-op if nothing new was evaluated today). Never trains a model,
+      # never touches strategy/signal logic; only reports what the
+      # accumulated sample currently supports and flags what's too small to
+      # trust yet.
+      - name: Run research diagnostics
+        run: python -m scripts.run_diagnostics_report
+
+      # Reads accumulated ingestion_runs/data_quality_events/paper_observations/
+      # research_diagnostics history and fails the job if ingestion has failed
+      # on several consecutive runs in a row -- catches a pipeline that has
+      # been silently degraded for days even though no single run crashed
+      # loudly enough on its own to be noticed. Never touches strategy logic.
+      - name: Run pipeline health monitoring
+        run: python -m scripts.run_monitoring_report
+
+      # Convenience only, not the durable store: a short-lived, human-readable
+      # copy of today's CSV/JSON export for quick inspection. Never committed
+      # to git -- the warehouse (below) is what actually needs to survive.
+      - name: Upload today's research journal (short-lived, for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-journal-${{ github.run_id }}
+          path: research_data
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Incremental: partitions whose row count already matches the manifest
+      # carried over from the morning job are left untouched, so only today's
+      # data is actually written and re-checksummed.
+      - name: Persist to warehouse
+        run: python -m scripts.warehouse_persist --root data/warehouse --source data/trading.duckdb
+
+      - name: Upload warehouse artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warehouse
+          path: data/warehouse
+          retention-days: 90
+          if-no-files-found: error

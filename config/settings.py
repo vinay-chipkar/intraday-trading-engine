@@ -14,6 +14,7 @@ load_dotenv(ROOT / ".env")
 class Settings:
     upstox_access_token: str | None = os.getenv("UPSTOX_ACCESS_TOKEN")
     duckdb_path: str = os.getenv("DUCKDB_PATH", str(ROOT / "data" / "trading.duckdb"))
+    warehouse_root: str = os.getenv("WAREHOUSE_ROOT", str(ROOT / "data" / "warehouse"))
     timezone: str = os.getenv("TIMEZONE", "Asia/Kolkata")
     top_n: int = int(os.getenv("TOP_N", "10"))
     candle_interval: int = int(os.getenv("CANDLE_INTERVAL", "1"))

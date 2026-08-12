@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS paper_outcomes(
 """
 
 
-def ensure_outcome_table() -> None:
-    connection = conn()
+def ensure_outcome_table(path: str | None = None) -> None:
+    connection = conn(path)
     try:
         connection.execute(OUTCOME_SCHEMA)
     finally:

@@ -5,6 +5,11 @@ __pycache__/
 .pytest_cache/
 data/*.duckdb
 data/*.parquet
+# The Parquet warehouse (intraday_engine/storage/warehouse) is durable state,
+# not code -- it must never land in git. It's persisted via GitHub Actions
+# artifacts today (see .github/workflows/paper-research.yml) and is designed
+# to move to real object storage later without any research-logic changes.
+data/warehouse/
 logs/
 models/*.joblib
 *.log

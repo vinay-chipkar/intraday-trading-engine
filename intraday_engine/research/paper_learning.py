@@ -33,8 +33,8 @@ CREATE TABLE IF NOT EXISTS paper_failure_analysis(
 """
 
 
-def ensure_learning_table() -> None:
-    connection = conn()
+def ensure_learning_table(path: str | None = None) -> None:
+    connection = conn(path)
     try:
         connection.execute(LEARNING_SCHEMA)
     finally:

@@ -62,8 +62,8 @@ CREATE TABLE IF NOT EXISTS paper_observations(
 """
 
 
-def ensure_observation_table() -> None:
-    connection = conn()
+def ensure_observation_table(path: str | None = None) -> None:
+    connection = conn(path)
     try:
         connection.execute(OBSERVATION_SCHEMA)
     finally:

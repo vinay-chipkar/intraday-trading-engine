@@ -199,7 +199,13 @@ FEATURE_SNAPSHOT_COLUMNS = [
     "close", "volume", "relative_volume", "vwap", "rsi14", "ema9", "ema20",
     "ema50", "ema200", "atr14", "support", "resistance", "distance_to_support_pct",
     "distance_to_resistance_pct", "candle_pattern", "trend", "breakout", "breakdown",
-    "feature_score", "feature_json",
+    "feature_score", "feature_json", "observation_id",
+]
+
+TRAINING_LABEL_COLUMNS = [
+    "event_time", "symbol", "horizon_minutes", "entry_price", "target_price",
+    "stop_price", "target_hit_first", "max_favorable_excursion",
+    "max_adverse_excursion", "label", "observation_id",
 ]
 
 NEWS_COLUMNS = [
@@ -208,8 +214,14 @@ NEWS_COLUMNS = [
 ]
 
 
-def conn():
-    connection = duckdb.connect(settings.duckdb_path)
+def conn(path: str | None = None):
+    """Open a fresh, fully-migrated connection.
+
+    Defaults to the configured research database; callers that need a
+    connection to some other DuckDB file (e.g. warehouse restore targets)
+    can pass `path` explicitly and still get the exact same schema/migrations.
+    """
+    connection = duckdb.connect(path or settings.duckdb_path)
     connection.execute(SCHEMA)
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_score DOUBLE")
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS news_count INTEGER")
@@ -218,6 +230,11 @@ def conn():
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS data_quality VARCHAR")
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS rvol_valid BOOLEAN")
     connection.execute("ALTER TABLE candidate_events ADD COLUMN IF NOT EXISTS liquidity_valid BOOLEAN")
+    # Links a feature snapshot / training label back to the paper observation
+    # it was derived from -- both the idempotency key and the audit trail for
+    # research/learning_pipeline.py.
+    connection.execute("ALTER TABLE feature_snapshots ADD COLUMN IF NOT EXISTS observation_id VARCHAR")
+    connection.execute("ALTER TABLE training_labels ADD COLUMN IF NOT EXISTS observation_id VARCHAR")
     return connection
 
 
