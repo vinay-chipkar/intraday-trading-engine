@@ -6,6 +6,7 @@ SESSION_MINUTES = 375  # NSE cash session: 09:15-15:30 IST.
 
 
 def _percentile(values: list[float], value: float) -> float:
+    """Return a deterministic 0-1 percentile using average ranks for ties."""
     clean = sorted(v for v in values if v == v)
     if not clean:
         return 0.0
@@ -31,6 +32,7 @@ def _rvol_score(rvol: float) -> float:
 
 
 def _momentum_score(change_pct: float, regime_score: float) -> float:
+    """Reward directional momentum that agrees with the market regime."""
     if regime_score >= 5:
         directional = max(change_pct, 0.0)
     elif regime_score <= -5:
@@ -41,6 +43,7 @@ def _momentum_score(change_pct: float, regime_score: float) -> float:
 
 
 def _volatility_score(day_range_pct: float) -> float:
+    # Enough movement for intraday opportunity, while avoiding extreme ranges.
     if 1.0 <= day_range_pct <= 4.0:
         return 15.0
     if 0.5 <= day_range_pct < 1.0 or 4.0 < day_range_pct <= 6.0:
@@ -51,6 +54,7 @@ def _volatility_score(day_range_pct: float) -> float:
 
 
 def _news_component(news_score: float, market_score: float) -> tuple[float, str | None]:
+    """Convert [-1,1] news sentiment into a small directional ranking component."""
     news_score = max(-1.0, min(1.0, news_score))
     if abs(news_score) < 0.05:
         return 0.0, None

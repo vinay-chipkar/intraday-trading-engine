@@ -1,5 +1,9 @@
+import dataclasses
+
 import pandas as pd
 
+import intraday_engine.storage.db as db
+from config.settings import settings as real_settings
 from intraday_engine.scanner.service import ScannerConfig, scan_universe
 
 
@@ -128,3 +132,42 @@ def test_incomplete_history_cannot_outrank_complete_history(monkeypatch):
     assert ranked[0]["symbol"] == "COMPLETE"
     missing = next(row for row in scan_universe(FakeClient(), ScannerConfig(limit=1), trading_date=pd.Timestamp("2026-08-11").date()) if row["symbol"] == "MISSING")
     assert missing["candidate_score"] < 10.0
+
+
+def test_scan_universe_persists_columns_in_the_exact_candidate_events_schema_order(monkeypatch, tmp_path):
+    # storage/db.py::insert_df runs `INSERT INTO table SELECT * FROM incoming_df`
+    # -- a POSITIONAL insert, not by column name. candidate_events is built from
+    # a 14-column CREATE TABLE plus 4 columns added later via ALTER TABLE
+    # (history_days, data_quality, rvol_valid, liquidity_valid), so the only way
+    # to know the true runtime column order is to ask the schema, not to read
+    # the CREATE TABLE statement by eye. A service.py that persists a DataFrame
+    # with the wrong column count/order would either raise (count mismatch) or,
+    # worse, silently misalign values into the wrong columns.
+    fake_settings = dataclasses.replace(real_settings, duckdb_path=str(tmp_path / "schema_check.duckdb"))
+    monkeypatch.setattr(db, "settings", fake_settings)
+    connection = db.conn()
+    try:
+        schema_columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'candidate_events' ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    instruments = pd.DataFrame([{"symbol": "AAA", "instrument_key": "NSE_EQ|AAA"}])
+    liquidity = pd.DataFrame([
+        {"symbol": "AAA", "avg_daily_volume": 1000.0, "avg_daily_traded_value": 100_000_000.0, "history_days": 20},
+    ])
+    _patch_scanner(monkeypatch, instruments, liquidity)
+    persisted = {}
+    monkeypatch.setattr(
+        "intraday_engine.scanner.service.insert_df",
+        lambda table, df: persisted.setdefault("df", df),
+    )
+
+    scan_universe(FakeClient(), ScannerConfig(limit=1), trading_date=pd.Timestamp("2026-08-11").date())
+
+    assert list(persisted["df"].columns) == schema_columns
