@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
-from intraday_engine.market.ingestion import ingest_symbols
+from intraday_engine.market.ingestion import assess_ingestion_results, ingest_symbols
 from intraday_engine.market.universe import sync_instruments
 from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.scanner.service import ScannerConfig, scan_top10
@@ -57,6 +57,7 @@ def run_daily_cycle(
 
         if not skip_ingest:
             results = ingest_symbols(interval=settings.candle_interval)
+            assess_ingestion_results(results)
             failed = [result for result in results if result.error]
             inserted = sum(result.rows_inserted for result in results)
             print(

@@ -14,6 +14,39 @@ from intraday_engine.storage.db import (
 
 LOGGER = logging.getLogger(__name__)
 
+# A handful of symbol-level failures (a delisted ticker, one transient 500) is
+# normal degradation and is tolerated as a warning. But the scanner's ranking
+# is cross-sectional (percentiles across the universe) and the signal engine
+# needs same-day bars -- if most of the universe failed to ingest, the result
+# is not a smaller-but-usable dataset, it's an unusable one, and must not be
+# treated as a successful run.
+MIN_INGESTION_SUCCESS_RATIO = 0.5
+
+
+class IngestionFailure(RuntimeError):
+    """Raised when an ingestion batch is too degraded for downstream use."""
+
+
+def assess_ingestion_results(results: list[IngestionResult]) -> None:
+    """Raise IngestionFailure when an ingestion batch is unusable as a whole.
+
+    Silent partial/total failure is exactly how this pipeline's staleness and
+    empty-outcome incidents went undetected in the past: per-symbol errors
+    were recorded but nothing ever turned "most of the universe failed" into a
+    hard failure the caller (and CI) could see.
+    """
+    if not results:
+        raise IngestionFailure("ingestion produced no results at all (empty symbol universe?)")
+    failed = [result for result in results if result.error]
+    success_ratio = (len(results) - len(failed)) / len(results)
+    if success_ratio < MIN_INGESTION_SUCCESS_RATIO:
+        failed_symbols = ", ".join(result.symbol for result in failed)
+        raise IngestionFailure(
+            f"ingestion failed for {len(failed)}/{len(results)} symbols "
+            f"({success_ratio:.0%} succeeded, below the {MIN_INGESTION_SUCCESS_RATIO:.0%} "
+            f"minimum): {failed_symbols}"
+        )
+
 
 @dataclass(frozen=True)
 class IngestionResult:

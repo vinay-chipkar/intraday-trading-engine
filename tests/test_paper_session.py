@@ -2,7 +2,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from intraday_engine.market.ingestion import IngestionFailure, IngestionResult
 from scripts import paper_session
+
+
+def _ingestion_result(symbol: str, *, error: str | None = None) -> IngestionResult:
+    return IngestionResult(
+        symbol=symbol,
+        rows_received=0 if error else 5,
+        rows_inserted=0 if error else 5,
+        last_timestamp=None,
+        quality={},
+        error=error,
+    )
 
 
 def test_paper_session_rejects_invalid_interval(monkeypatch):
@@ -55,3 +67,63 @@ def test_market_times_are_ist():
     assert paper_session.MARKET_OPEN.minute == 15
     assert paper_session.MARKET_CLOSE.hour == 15
     assert paper_session.MARKET_CLOSE.minute == 30
+
+
+def test_refresh_candles_raises_when_whole_universe_fails(monkeypatch):
+    # Requirement: "if paper_session refresh fails for the whole universe, do
+    # not silently continue" -- a few DATA WARNING prints used to be the only
+    # signal; now the tick itself must fail.
+    monkeypatch.setattr(
+        paper_session,
+        "ingest_symbols",
+        lambda interval: [_ingestion_result(s, error="401 Unauthorized") for s in "ABCDE"],
+    )
+    with pytest.raises(IngestionFailure, match="5/5 symbols"):
+        paper_session._refresh_candles()
+
+
+def test_refresh_candles_tolerates_one_bad_symbol(monkeypatch):
+    monkeypatch.setattr(
+        paper_session,
+        "ingest_symbols",
+        lambda interval: [_ingestion_result(s) for s in "ABCD"] + [_ingestion_result("E", error="timeout")],
+    )
+    paper_session._refresh_candles()  # must not raise
+
+
+def test_check_tick_freshness_raises_when_every_observation_is_stale():
+    observed = [{"symbol": "A", "status": "STALE_DATA"}, {"symbol": "B", "status": "STALE_DATA"}]
+    with pytest.raises(paper_session.StaleTickError, match="all 2 observations"):
+        paper_session._check_tick_freshness(observed)
+
+
+def test_check_tick_freshness_raises_on_zero_observations():
+    with pytest.raises(paper_session.StaleTickError, match="zero observations"):
+        paper_session._check_tick_freshness([])
+
+
+def test_check_tick_freshness_tolerates_a_mix_of_stale_and_fresh():
+    observed = [
+        {"symbol": "A", "status": "STALE_DATA"},
+        {"symbol": "B", "status": "NO_SIGNAL"},
+        {"symbol": "C", "status": "SIGNAL_PENDING"},
+    ]
+    paper_session._check_tick_freshness(observed)  # must not raise
+
+
+def test_fail_if_session_unhealthy_raises_when_every_tick_failed():
+    with pytest.raises(SystemExit, match="UNHEALTHY"):
+        paper_session._fail_if_session_unhealthy(ticks_ok=0, ticks_failed=3)
+
+
+def test_fail_if_session_unhealthy_raises_when_majority_of_ticks_failed():
+    with pytest.raises(SystemExit, match="UNHEALTHY"):
+        paper_session._fail_if_session_unhealthy(ticks_ok=1, ticks_failed=2)
+
+
+def test_fail_if_session_unhealthy_tolerates_a_healthy_majority():
+    paper_session._fail_if_session_unhealthy(ticks_ok=8, ticks_failed=1)  # must not raise
+
+
+def test_fail_if_session_unhealthy_noop_when_no_ticks_ran():
+    paper_session._fail_if_session_unhealthy(ticks_ok=0, ticks_failed=0)  # must not raise
