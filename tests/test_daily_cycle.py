@@ -60,6 +60,13 @@ def test_daily_cycle_tolerates_one_failed_symbol(monkeypatch):
         lambda interval: [_ingestion_result("A"), _ingestion_result("B"), _ingestion_result("C", error="timeout")],
     )
     monkeypatch.setattr(daily_cycle, "latest_market_context", lambda: {})
+    # run_daily_cycle constructs UpstoxREST() inline as scan_top10's argument
+    # *before* the (mocked) scan_top10 is ever called, so mocking scan_top10
+    # alone doesn't stop the real client from being built -- and UpstoxREST()
+    # raises without a real UPSTOX_ACCESS_TOKEN, which CI correctly doesn't
+    # have. scan_top10 never inspects the client it's given here, so a plain
+    # sentinel is enough to keep this test self-contained.
+    monkeypatch.setattr(daily_cycle, "UpstoxREST", lambda: "FAKE_UPSTOX_CLIENT")
     monkeypatch.setattr(daily_cycle, "scan_top10", lambda api, config, trading_date: [])
     monkeypatch.setattr(daily_cycle, "insert_research_run", lambda row: recorded_runs.append(row))
 
