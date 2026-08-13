@@ -41,7 +41,7 @@ def ensure_learning_table(path: str | None = None) -> None:
         connection.close()
 
 
-def _failure_class(outcome: str, reasons: str, blockers: str) -> str:
+def _failure_class(outcome: str, side: str, reasons: str, blockers: str) -> str:
     if outcome in {"STOP", "STOP_GAP"}:
         try:
             blocker_values = json.loads(blockers or "[]")
@@ -51,7 +51,15 @@ def _failure_class(outcome: str, reasons: str, blockers: str) -> str:
             reason_values = json.loads(reasons or "[]")
         except json.JSONDecodeError:
             reason_values = []
-        if any("VWAP" in str(x).upper() for x in reason_values):
+        # A genuine VWAP conflict is the trade firing *despite* VWAP
+        # disagreeing with its direction (signals/engine.py always states one
+        # of these two reasons, in whichever direction price actually sat --
+        # matching the trade's own side is agreement, not conflict).
+        vwap_conflict = (
+            (side == "LONG" and "price is below VWAP" in reason_values)
+            or (side == "SHORT" and "price is above VWAP" in reason_values)
+        )
+        if vwap_conflict:
             return "STOP_WITH_VWAP_CONFLICT"
         if any("volume" in str(x).lower() for x in blocker_values):
             return "STOP_WITH_WEAK_VOLUME"
@@ -94,8 +102,10 @@ def build_failure_analysis() -> int:
         ]
         frame = pd.DataFrame(rows, columns=columns)
         frame["failure_class"] = [
-            _failure_class(o, r, b)
-            for o, r, b in zip(frame["outcome"], frame["signal_reasons"], frame["signal_blockers"])
+            _failure_class(o, s, r, b)
+            for o, s, r, b in zip(
+                frame["outcome"], frame["side"], frame["signal_reasons"], frame["signal_blockers"]
+            )
         ]
         connection.register("paper_failure_analysis_in", frame)
         connection.execute("INSERT OR IGNORE INTO paper_failure_analysis SELECT * FROM paper_failure_analysis_in")

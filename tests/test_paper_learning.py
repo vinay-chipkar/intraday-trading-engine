@@ -16,25 +16,49 @@ def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "settings", fake_settings)
 
 
-def test_stop_with_weak_volume_is_classified():
+def test_vwap_agreement_is_not_a_conflict():
+    # "price is above VWAP" on a LONG is VWAP *agreeing* with the trade --
+    # merely mentioning VWAP must not be classified as a conflict. With no
+    # real conflict present, this should fall through to the weak-volume
+    # blocker instead.
     assert _failure_class(
         "STOP",
-        '["price is below VWAP"]',
+        "LONG",
+        '["price is above VWAP"]',
         '["relative volume is weak"]',
+    ) == "STOP_WITH_WEAK_VOLUME"
+
+
+def test_long_stopped_out_despite_vwap_disagreeing_is_a_genuine_conflict():
+    assert _failure_class(
+        "STOP",
+        "LONG",
+        '["price is below VWAP"]',
+        '[]',
+    ) == "STOP_WITH_VWAP_CONFLICT"
+
+
+def test_short_stopped_out_despite_vwap_disagreeing_is_a_genuine_conflict():
+    assert _failure_class(
+        "STOP",
+        "SHORT",
+        '["price is above VWAP"]',
+        '[]',
     ) == "STOP_WITH_VWAP_CONFLICT"
 
 
 def test_stop_with_extension_is_classified():
     assert _failure_class(
         "STOP_GAP",
+        "LONG",
         '[]',
         '["price is extended from VWAP"]',
     ) == "STOP_WHILE_EXTENDED"
 
 
 def test_timeout_and_win_are_classified():
-    assert _failure_class("TIMEOUT", "[]", "[]") == "TIMEOUT"
-    assert _failure_class("TARGET", "[]", "[]") == "WIN"
+    assert _failure_class("TIMEOUT", "LONG", "[]", "[]") == "TIMEOUT"
+    assert _failure_class("TARGET", "LONG", "[]", "[]") == "WIN"
 
 
 def test_learning_report_summary_does_not_raise_on_ambiguous_columns(isolated_db):

@@ -70,10 +70,10 @@ def _load_evaluated_population() -> pd.DataFrame:
             """
             SELECT
                 o.observation_id, o.symbol, o.signal_action AS action, o.signal_score,
-                o.candidate_score, o.market_regime, o.relative_volume,
+                o.candidate_score, o.market_regime,
                 p.outcome, p.pnl_points, p.r_multiple, p.exit_time, p.evaluated_at,
                 f.rsi14, f.vwap, f.close AS feature_close, f.ema9, f.ema20, f.ema50,
-                f.trend
+                f.trend, f.relative_volume
             FROM paper_observations o
             JOIN paper_outcomes p USING (observation_id)
             LEFT JOIN feature_snapshots f USING (observation_id)
@@ -106,6 +106,10 @@ def _add_derived_dimensions(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["signal_score_band"] = out["signal_score"].abs().apply(score_bucket)
     out["candidate_score_band"] = out["candidate_score"].apply(candidate_score_bucket)
+    # feature_snapshots.relative_volume (the live, bar-level RVOL the signal
+    # engine actually used), not paper_observations.relative_volume -- the
+    # latter is a frozen snapshot from the scanner's once-per-day candidate
+    # scan and is unrelated to the RVOL that drove any individual signal.
     out["rvol_band"] = out["relative_volume"].apply(rvol_bucket)
     out["rsi_band"] = out["rsi14"].apply(rsi_bucket)
     out["vwap_condition"] = out.apply(_vwap_condition, axis=1)

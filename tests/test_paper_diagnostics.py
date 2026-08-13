@@ -73,15 +73,15 @@ def _insert_evaluated(
                 """
                 INSERT INTO feature_snapshots
                     (event_time, trading_date, symbol, instrument_key, timeframe, close, volume,
-                     rsi14, vwap, ema9, ema20, ema50, trend, feature_score, observation_id)
+                     rsi14, vwap, ema9, ema20, ema50, trend, relative_volume, feature_score, observation_id)
                 VALUES
                     (TIMESTAMPTZ '2026-08-11 05:00:00+00', DATE '2026-08-11', 'TEST', 'NSE_EQ|TEST', '1m',
-                     ?, 1000, ?, ?, ?, ?, ?, ?, 50.0, ?)
+                     ?, 1000, ?, ?, ?, ?, ?, ?, ?, 50.0, ?)
                 """,
                 [
                     feature.get("close", 100.0), feature.get("rsi14", 55.0), feature.get("vwap", 100.0),
                     feature.get("ema9", 100.0), feature.get("ema20", 99.0), feature.get("ema50", 98.0),
-                    feature.get("trend", "UPTREND"), observation_id,
+                    feature.get("trend", "UPTREND"), feature.get("relative_volume"), observation_id,
                 ],
             )
     finally:
@@ -215,6 +215,23 @@ def test_vwap_and_ema_conditions_derived_from_feature_snapshot(isolated_db):
     ema_rows = {row["ema_alignment"]: row for row in report["breakdowns"]["ema_alignment"]["summary"]}
     assert "ABOVE_VWAP" in vwap_rows
     assert "BULLISH_ALIGNED" in ema_rows
+
+
+def test_rvol_band_uses_the_live_feature_snapshot_not_the_frozen_scanner_snapshot(isolated_db):
+    # Mirrors the real production case found in the Phase 8 review: the
+    # scanner-time relative_volume stored on paper_observations was 0.0 for
+    # every trade (no historical backfill yet), while the signal engine's own
+    # live, bar-level RVOL -- stored on feature_snapshots -- was genuinely
+    # elevated. rvol_band must reflect the value that actually drove the
+    # signal, not the stale scanner snapshot.
+    _insert_evaluated(
+        observation_id="obs-1",
+        relative_volume=0.0,
+        feature={"relative_volume": 2.5},
+    )
+    report = build_diagnostics_report()
+    rvol_rows = {row["rvol_band"] for row in report["breakdowns"]["rvol_band"]["summary"]}
+    assert rvol_rows == {"2.0+"}
 
 
 def test_observation_without_a_feature_snapshot_reports_unknown_not_a_crash(isolated_db):
