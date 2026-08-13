@@ -73,6 +73,27 @@ jobs:
           rm warehouse.zip
           python -m scripts.warehouse_restore --root data/warehouse --target data/trading.duckdb
 
+      # scripts.backfill needs instrument_master populated to resolve symbols
+      # to instrument keys; on a fresh/restored database this hasn't happened
+      # yet (the daily bootstrap below also syncs, but only after backfill
+      # would otherwise need to run). Cheap and idempotent (upsert).
+      - name: Sync instrument universe
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.sync_instruments
+
+      # The scanner's candidate scoring caps any symbol's score at 9.999 until
+      # it has >= lookback_days (20) of prior daily candle history -- without
+      # this, every candidate is capped and scores stop differentiating
+      # anything (see the Phase 8 readiness review). insert_candles() dedupes
+      # by timestamp, so re-running this every day is safe and cheap; it keeps
+      # a rolling ~30-day history topped up even if the warehouse is ever
+      # restored from an older or partial state.
+      - name: Backfill rolling 30-day candle history
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: python -m scripts.backfill --universe --days 30
+
       - name: Run paper daily bootstrap
         env:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
