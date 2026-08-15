@@ -83,6 +83,7 @@ def test_build_pipeline_produces_one_snapshot_and_label_per_evaluated_observatio
     assert summary == {
         "evaluated_pending": 1, "feature_snapshots_written": 1,
         "training_labels_written": 1, "skipped_no_candles": 0,
+        "from_decision_features": 0, "from_recomputed_candles": 1,
     }
 
     connection = db.conn(path=isolated_db)
@@ -256,3 +257,89 @@ def test_observation_with_no_matching_candle_is_skipped_not_guessed(isolated_db)
     assert summary["evaluated_pending"] == 1
     assert summary["feature_snapshots_written"] == 0
     assert summary["skipped_no_candles"] == 1
+
+
+def _create_real_observation_via_signal_path(db_path: str, symbol: str) -> tuple[str, dict, pd.Timestamp]:
+    """Builds an observation through the real _signal_for_symbol/build_observation
+    path (decision_features captured), rather than test helper _create_observation_and_outcome's
+    hand-built TradeSignal (which never captures decision_features).
+
+    _signal_for_symbol always scores the *latest* available candle, so the
+    caller must insert only the "decision" history first and add resolution
+    bars afterward (mirroring how the real pipeline ticks forward in time).
+    """
+    from intraday_engine.research.paper_observer import _signal_for_symbol
+
+    ensure_observation_table(db_path)
+    ensure_outcome_table(db_path)
+    signal, bar_time, decision_features = _signal_for_symbol(
+        symbol, instrument_key=f"NSE_EQ|{symbol}", market_score=0.0, min_score=1.0
+    )
+    row = build_observation(
+        observed_at=pd.Timestamp.now(tz="UTC"),
+        trading_date=pd.Timestamp("2026-08-11").date(),
+        candidate={"symbol": symbol, "instrument_key": f"NSE_EQ|{symbol}", "rank": 1, "candidate_score": 50.0,
+                   "change_pct": 1.0, "relative_volume": 1.5, "vwap": 100.0},
+        signal=signal, market_regime="NEUTRAL", market_score=0.0, bar_time=bar_time,
+        decision_features=decision_features,
+    )
+    persist_observations([row])
+    return row["observation_id"], decision_features, pd.Timestamp(bar_time)
+
+
+def test_feature_snapshot_uses_the_captured_decision_features_not_a_recomputation(isolated_db):
+    _insert_candles(isolated_db, "TEST", _rising_candles("TEST", 31))  # decision history, bar 30 is "now"
+    obs_id, decision_features, bar_time = _create_real_observation_via_signal_path(isolated_db, "TEST")
+    # resolution bars, strictly after the decision bar
+    _insert_candles(isolated_db, "TEST", _rising_candles("TEST", 5, start_minute=76))
+    evaluate_pending(max_holding_bars=5)
+
+    summary = build_feature_snapshots_and_labels()
+    assert summary["from_decision_features"] == 1
+    assert summary["from_recomputed_candles"] == 0
+
+    connection = db.conn(path=isolated_db)
+    snapshot = connection.execute(
+        "SELECT trend, relative_volume, rsi14, event_time FROM feature_snapshots WHERE observation_id = ?", [obs_id]
+    ).df().iloc[0]
+    connection.close()
+
+    assert pd.Timestamp(snapshot["event_time"]) == bar_time
+    assert snapshot["trend"] == decision_features["trend"]
+    if decision_features["relative_volume"] is not None:
+        assert snapshot["relative_volume"] == pytest.approx(decision_features["relative_volume"])
+
+
+def test_feature_snapshot_is_unaffected_by_a_candle_revision_made_after_capture(isolated_db):
+    """The decisive proof for why decision_features must be captured, not
+    recomputed: if a candle used at signal time is later revised (e.g.
+    market/ingestion.py::upsert_candles correcting a provisional bar), the
+    feature snapshot must still reflect what the signal actually saw, not
+    the revised data.
+    """
+    _insert_candles(isolated_db, "TEST", _rising_candles("TEST", 31))
+    obs_id, decision_features, bar_time = _create_real_observation_via_signal_path(isolated_db, "TEST")
+    _insert_candles(isolated_db, "TEST", _rising_candles("TEST", 5, start_minute=76))
+    evaluate_pending(max_holding_bars=5)
+
+    # Revise every stored candle's close/volume in place (same timestamps,
+    # different values) -- simulates upstream correcting provisional bars
+    # *after* the signal was already generated from the original values.
+    connection = db.conn(path=isolated_db)
+    connection.execute(
+        "UPDATE candles SET close = close * 3, volume = volume * 5 WHERE instrument_key = 'NSE_EQ|TEST'"
+    )
+    connection.close()
+
+    build_feature_snapshots_and_labels()
+
+    connection = db.conn(path=isolated_db)
+    snapshot = connection.execute(
+        "SELECT trend, rsi14, close FROM feature_snapshots WHERE observation_id = ?", [obs_id]
+    ).df().iloc[0]
+    connection.close()
+
+    # Matches the ORIGINAL captured decision, not a recomputation against
+    # the now-revised (3x close, 5x volume) candles.
+    assert snapshot["close"] == pytest.approx(decision_features["close"])
+    assert snapshot["trend"] == decision_features["trend"]

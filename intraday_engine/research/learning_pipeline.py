@@ -3,12 +3,18 @@ feature snapshots and training labels, automatically and idempotently.
 
 Causality contract, enforced by construction, not by convention:
 
-- The feature snapshot for an observation is built from candles at or before
-  that observation's own `bar_time` -- never anything after. `bar_time` is
-  the exact timestamp `paper_observer.py::_signal_for_symbol` already used as
-  "now" when the original signal was generated, so this reuses the same
-  point-in-time cutoff, just re-derived from stored candles rather than a
-  live quote.
+- The feature snapshot for an observation is, whenever available, the exact
+  point-in-time feature vector `paper_observer.py::_signal_for_symbol`
+  captured and stored (`paper_observations.decision_features`) at the moment
+  it built the live signal -- not a later recomputation. This matters
+  because feature_engine.py's re-enrichment is an independent implementation
+  from strategy/point_in_time.py's live path (different support/resistance/
+  trend definitions), and because candles can be revised after the signal
+  was generated (market/ingestion.py::upsert_candles) -- recomputing later
+  would silently drift from what the signal actually saw. Observations that
+  predate decision_features capture fall back to the old approach: features
+  re-derived from candles at or before the observation's own `bar_time`,
+  never anything after.
 - The training label is *not* re-derived from raw candles at all. It is
   copied directly from the observation's `paper_outcomes` row, which was
   itself computed by `paper_outcomes.py::evaluate_trade` -- already verified
@@ -23,6 +29,8 @@ Causality contract, enforced by construction, not by convention:
 """
 
 from __future__ import annotations
+
+import json
 
 import pandas as pd
 
@@ -43,7 +51,7 @@ def _load_unprocessed_evaluated_observations() -> pd.DataFrame:
     try:
         return connection.execute(
             """
-            SELECT o.observation_id, o.symbol, o.instrument_key, o.bar_time,
+            SELECT o.observation_id, o.symbol, o.instrument_key, o.bar_time, o.decision_features,
                    p.entry_price, p.target AS target_price, p.stop_loss AS stop_price,
                    p.outcome, p.mfe_points, p.mae_points
             FROM paper_observations o
@@ -59,18 +67,32 @@ def _load_unprocessed_evaluated_observations() -> pd.DataFrame:
         connection.close()
 
 
-def _causal_candles(symbol: str, as_of) -> pd.DataFrame:
-    """Every 1m candle for `symbol` at or before `as_of` -- never after."""
+def _snapshot_from_decision_features(decision_features_json: str, *, observation_id: str) -> dict:
+    """Rebuild the exact captured decision-time snapshot dict from its stored
+    JSON, restoring the datetime/date types json.dumps(default=str) flattened
+    to plain strings."""
+    parsed = json.loads(decision_features_json)
+    parsed["event_time"] = pd.Timestamp(parsed["event_time"]).to_pydatetime()
+    parsed["trading_date"] = pd.Timestamp(parsed["trading_date"]).date()
+    parsed["observation_id"] = observation_id
+    return parsed
+
+
+def _causal_candles(instrument_key: str, as_of) -> pd.DataFrame:
+    """Every 1m candle for `instrument_key` at or before `as_of` -- never
+    after. Filtered by instrument_key, not symbol -- see
+    paper_observer.py::_load_bars for why a symbol-only query risks mixing
+    histories across a remapped instrument_key (relisting/rename)."""
     connection = conn()
     try:
         return connection.execute(
             """
             SELECT timestamp, open, high, low, close, volume
             FROM candles
-            WHERE symbol = ? AND interval = '1m' AND timestamp <= ?
+            WHERE instrument_key = ? AND interval = '1m' AND timestamp <= ?
             ORDER BY timestamp
             """,
-            [symbol, as_of],
+            [instrument_key, as_of],
         ).df()
     finally:
         connection.close()
@@ -88,17 +110,32 @@ def build_feature_snapshots_and_labels(*, horizon_minutes: int = 30) -> dict:
     snapshot_rows: list[dict] = []
     label_rows: list[dict] = []
     skipped_no_candles: list[str] = []
+    from_decision_features = 0
+    from_recomputed_candles = 0
 
     for row in pending.itertuples(index=False):
-        bars = _causal_candles(row.symbol, row.bar_time)
-        if bars.empty or pd.Timestamp(bars["timestamp"].iloc[-1]) != pd.Timestamp(row.bar_time):
-            # No candle at all, or (defensively) the causal query's last row
-            # isn't exactly the observation's own bar -- refuse to guess.
-            skipped_no_candles.append(row.observation_id)
-            continue
+        decision_features = getattr(row, "decision_features", None)
+        if decision_features:
+            # Exact decision-time capture exists -- use it directly. Never
+            # recompute when this is available: recomputation is an
+            # independent implementation (feature_engine.py vs.
+            # strategy/point_in_time.py) and is vulnerable to candles having
+            # been revised after the signal was generated.
+            snapshot = _snapshot_from_decision_features(decision_features, observation_id=row.observation_id)
+            from_decision_features += 1
+        else:
+            # Historical observation predating decision_features capture --
+            # fall back to the old recompute-from-candles approximation.
+            bars = _causal_candles(row.instrument_key, row.bar_time)
+            if bars.empty or pd.Timestamp(bars["timestamp"].iloc[-1]) != pd.Timestamp(row.bar_time):
+                # No candle at all, or (defensively) the causal query's last
+                # row isn't exactly the observation's own bar -- refuse to guess.
+                skipped_no_candles.append(row.observation_id)
+                continue
+            snapshot = latest_feature_snapshot(bars, symbol=row.symbol, instrument_key=row.instrument_key)
+            snapshot["observation_id"] = row.observation_id
+            from_recomputed_candles += 1
 
-        snapshot = latest_feature_snapshot(bars, symbol=row.symbol, instrument_key=row.instrument_key)
-        snapshot["observation_id"] = row.observation_id
         snapshot_rows.append({column: snapshot.get(column) for column in FEATURE_SNAPSHOT_COLUMNS})
 
         target_hit_first = row.outcome in _TARGET_OUTCOMES
@@ -126,4 +163,6 @@ def build_feature_snapshots_and_labels(*, horizon_minutes: int = 30) -> dict:
         "feature_snapshots_written": len(snapshot_rows),
         "training_labels_written": len(label_rows),
         "skipped_no_candles": len(skipped_no_candles),
+        "from_decision_features": from_decision_features,
+        "from_recomputed_candles": from_recomputed_candles,
     }

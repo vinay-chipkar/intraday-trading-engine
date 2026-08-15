@@ -49,6 +49,20 @@ CREATE TABLE IF NOT EXISTS instrument_master(
     updated_at TIMESTAMPTZ
 );
 
+-- Append-only log of every symbol -> instrument_key mapping ever observed.
+-- instrument_master itself only holds the current mapping (keyed by symbol,
+-- overwritten on resolve/relisting), so it cannot answer "what instrument_key
+-- was this symbol mapped to when a given historical observation was made."
+-- This table never overwrites a row -- see upsert_instruments().
+CREATE TABLE IF NOT EXISTS instrument_master_history(
+    symbol VARCHAR,
+    instrument_key VARCHAR,
+    name VARCHAR,
+    trading_symbol VARCHAR,
+    recorded_at TIMESTAMPTZ,
+    PRIMARY KEY (symbol, instrument_key)
+);
+
 CREATE TABLE IF NOT EXISTS candles(
     instrument_key VARCHAR,
     symbol VARCHAR,
@@ -251,14 +265,43 @@ def insert_df(table: str, df: pd.DataFrame) -> None:
 
 
 def upsert_instruments(df: pd.DataFrame) -> None:
+    """Update the current symbol -> instrument_key mapping, and append every
+    distinct (symbol, instrument_key) pair ever seen to instrument_master_history
+    so a past resolution (e.g. before a relisting/rename) stays traceable even
+    after instrument_master's current-row-per-symbol view moves on."""
     if df is None or df.empty:
         return
     connection = conn()
     try:
         connection.register("incoming_df", df)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO instrument_master_history
+            SELECT symbol, instrument_key, name, trading_symbol, updated_at FROM incoming_df
+            """
+        )
         connection.execute("INSERT OR REPLACE INTO instrument_master SELECT * FROM incoming_df")
     finally:
         connection.unregister("incoming_df")
+        connection.close()
+
+
+def instrument_history_for_symbol(symbol: str) -> pd.DataFrame:
+    """Every distinct instrument_key ever resolved for `symbol`, oldest first --
+    the audit trail for tracing a historical observation to the exact mapping
+    that was in effect when it was recorded."""
+    connection = conn()
+    try:
+        return connection.execute(
+            """
+            SELECT symbol, instrument_key, name, trading_symbol, recorded_at
+            FROM instrument_master_history
+            WHERE symbol = ?
+            ORDER BY recorded_at
+            """,
+            [symbol],
+        ).df()
+    finally:
         connection.close()
 
 
@@ -366,7 +409,14 @@ def insert_feature_snapshot(values: dict) -> None:
 
 
 def insert_candles(df: pd.DataFrame) -> int:
-    """Insert candles idempotently and return the number of new rows."""
+    """Insert candles idempotently and return the number of new rows.
+
+    INSERT OR IGNORE: a same-key (instrument_key, timestamp, interval) row
+    already present is left untouched. Used by one-time bulk backfills, where
+    reconciling revisions on every historical row on every call would be
+    unnecessary churn -- see upsert_candles() for the repeated-ingestion path,
+    where Upstox is known to revise a recent bar's OHLCV as more trades settle.
+    """
     if df is None or df.empty:
         return 0
     missing = set(CANDLE_COLUMNS).difference(df.columns)
@@ -382,6 +432,58 @@ def insert_candles(df: pd.DataFrame) -> int:
         return int(after - before)
     finally:
         connection.unregister("incoming_df")
+        connection.close()
+
+
+def upsert_candles(df: pd.DataFrame) -> dict:
+    """Insert new candles and reconcile existing same-key candles whose
+    OHLCV values have changed (Upstox commonly revises a provisional recent
+    bar as more trades settle before it's finalized).
+
+    Returns {"inserted": <new row count>, "revised": [<dict per changed row>]}
+    -- "revised" lists exactly which (instrument_key, timestamp, interval)
+    rows changed and their old vs. new OHLCV, for data-quality auditing by
+    the caller. Unlike insert_candles's INSERT OR IGNORE, a same-key row
+    already present gets overwritten if its values differ; identical rows are
+    left as a no-op (no churn, no spurious revision record).
+    """
+    if df is None or df.empty:
+        return {"inserted": 0, "revised": []}
+    missing = set(CANDLE_COLUMNS).difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing candle columns: {sorted(missing)}")
+    connection = conn()
+    try:
+        ordered = df[CANDLE_COLUMNS].copy()
+        connection.register("incoming_candles", ordered)
+
+        revised = connection.execute(
+            """
+            SELECT i.instrument_key, i.symbol, i.timestamp, i.interval,
+                   c.open AS old_open, c.high AS old_high, c.low AS old_low,
+                   c.close AS old_close, c.volume AS old_volume,
+                   i.open AS new_open, i.high AS new_high, i.low AS new_low,
+                   i.close AS new_close, i.volume AS new_volume
+            FROM incoming_candles i
+            JOIN candles c
+              ON c.instrument_key = i.instrument_key
+             AND c.timestamp = i.timestamp
+             AND c.interval = i.interval
+            WHERE c.open IS DISTINCT FROM i.open
+               OR c.high IS DISTINCT FROM i.high
+               OR c.low IS DISTINCT FROM i.low
+               OR c.close IS DISTINCT FROM i.close
+               OR c.volume IS DISTINCT FROM i.volume
+            """
+        ).df()
+
+        before = connection.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
+        connection.execute("INSERT OR REPLACE INTO candles SELECT * FROM incoming_candles")
+        after = connection.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
+
+        return {"inserted": int(after - before), "revised": revised.to_dict("records")}
+    finally:
+        connection.unregister("incoming_candles")
         connection.close()
 
 

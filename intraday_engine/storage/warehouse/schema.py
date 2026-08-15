@@ -31,7 +31,13 @@ from dataclasses import dataclass
 # v4: new research_monitoring table (research/monitoring.py), an append-only
 # ledger of pipeline operational health reports (ingestion failure trends,
 # stale-tick rate, sample growth). Still no real warehouse in production yet.
-SCHEMA_VERSION = 4
+# v5: new instrument_master_history table (storage/db.py::upsert_instruments),
+# an append-only log of every symbol -> instrument_key pair ever resolved --
+# the audit trail for tracing a historical observation back to the exact
+# instrument mapping in effect when it was recorded. A genuinely new table,
+# not a column addition, so existing instrument_master partitions are
+# unaffected and need no migration.
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
     TableSpec("market_context", "raw", "trading_date"),
     TableSpec("market_news", "raw", "CAST(captured_at AT TIME ZONE 'Asia/Kolkata' AS DATE)"),
     TableSpec("instrument_master", "raw", None),
+    TableSpec("instrument_master_history", "raw", None),
     # research/decision data
     TableSpec("candidate_events", "research", "trading_date"),
     TableSpec("signals", "research", "trading_date"),

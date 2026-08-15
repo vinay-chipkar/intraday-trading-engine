@@ -1,13 +1,23 @@
 """Export a DuckDB research database into the partitioned Parquet warehouse.
 
 Every write goes: query source -> COPY to a `.tmp` file -> re-read the temp
-file's row count and compare to the source query's row count -> only then
-sha256 the file, atomically rename it into place, and record it in the
-manifest. A partition is never recorded (and never left in place under its
-final name) unless it has already been proven to match the source, and a
-partition whose manifest-recorded row count already matches the source is
-left untouched -- this is what makes repeated/incremental persist calls
-idempotent without any special-casing of "today" vs "history".
+file's row count and compare to the source query's row count -> sha256 the
+file -> only then compare that checksum to the manifest's previously
+recorded one to decide skip-vs-write, atomically rename it into place, and
+record it in the manifest. A partition is never recorded (and never left in
+place under its final name) unless it has already been proven to match the
+source.
+
+The skip decision is a checksum comparison, not just a row-count comparison:
+a row revised in place (e.g. Upstox correcting a candle's OHLCV after
+ingestion already stored it) changes the partition's content without
+changing its row count, and a row-count-only check would silently keep
+serving the stale, already-persisted version of that partition forever. The
+tmp file is always (re-)written and hashed; it's only kept if the hash
+actually differs from what's on record -- this is what makes repeated
+persist calls idempotent (no-op when truly nothing changed) while still
+catching in-place revisions (write when the content changed even if the
+count didn't).
 """
 
 from __future__ import annotations
@@ -112,10 +122,6 @@ def persist_warehouse(source_db_path: str, root: str | Path) -> dict:
                 label = _partition_label(value)
                 rel_path = _relative_path(spec, label)
                 existing_entry = manifest.get(rel_path)
-                if existing_entry is not None and existing_entry["rows"] == source_rows:
-                    table_summary["skipped"] += 1
-                    summary["skipped"].append(rel_path)
-                    continue
 
                 target_path = root / rel_path
                 target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +142,16 @@ def persist_warehouse(source_db_path: str, root: str | Path) -> dict:
                     )
 
                 checksum = sha256_of_file(tmp_path)
+
+                if existing_entry is not None and existing_entry.get("sha256") == checksum:
+                    # Row count may or may not match -- what matters is the
+                    # content is byte-for-byte identical to what's already
+                    # durable, so there is genuinely nothing new to persist.
+                    tmp_path.unlink(missing_ok=True)
+                    table_summary["skipped"] += 1
+                    summary["skipped"].append(rel_path)
+                    continue
+
                 tmp_path.replace(target_path)  # atomic within the same filesystem
 
                 manifest[rel_path] = {

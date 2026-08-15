@@ -53,3 +53,63 @@ def test_quality_report_detects_duplicate_and_bad_ohlc():
     assert report["duplicates"] == 1
     assert report["invalid_ohlc"] == 1
     assert report["negative_volume"] == 1
+
+
+def test_quality_report_detects_a_missing_minute_gap():
+    # 09:15, 09:16, 09:18 -- 09:17 is missing.
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-08-10 09:15", "2026-08-10 09:16", "2026-08-10 09:18"], utc=True
+            ),
+            "open": [100, 100, 100],
+            "high": [101, 101, 101],
+            "low": [99, 99, 99],
+            "close": [100, 100, 100],
+            "volume": [1000, 1000, 1000],
+        }
+    )
+    report = quality_report(frame)
+    assert report["session_gaps"] == 1
+
+
+def test_quality_report_no_gaps_for_a_contiguous_sequence():
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-08-10 09:15", "2026-08-10 09:16", "2026-08-10 09:17"], utc=True
+            ),
+            "open": [100, 100, 100],
+            "high": [101, 101, 101],
+            "low": [99, 99, 99],
+            "close": [100, 100, 100],
+            "volume": [1000, 1000, 1000],
+        }
+    )
+    report = quality_report(frame)
+    assert report["session_gaps"] == 0
+
+
+def test_quality_report_flags_a_candle_outside_nse_session_hours():
+    # 09:15 IST is well inside the session; 20:00 UTC (~01:30 IST next day
+    # once converted, i.e. well outside 09:15-15:30) is not.
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-08-10 03:45:00Z", "2026-08-10 20:00:00Z"], utc=True
+            ),
+            "open": [100, 100],
+            "high": [101, 101],
+            "low": [99, 99],
+            "close": [100, 100],
+            "volume": [1000, 1000],
+        }
+    )
+    report = quality_report(frame)
+    assert report["outside_session"] == 1
+
+
+def test_quality_report_new_fields_present_for_empty_frame():
+    report = quality_report(pd.DataFrame())
+    assert report["session_gaps"] == 0
+    assert report["outside_session"] == 0

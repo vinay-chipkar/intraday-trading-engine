@@ -20,7 +20,15 @@ FEATURE_ENGINE_VERSION = "1.0.0"
 
 # Bump when the T+1-entry / same-bar-stop-wins / MAE-MFE execution assumptions
 # in backtest/engine.py or research/paper_outcomes.py change.
-EXECUTION_MODEL_VERSION = "1.0.0"
+# 1.1.0: paper_outcomes.py::evaluate_trade's mae_points used to be signed
+# (negative for an adverse move); it now stores a non-negative magnitude,
+# matching backtest/engine.py's convention exactly (both were already
+# non-negative for mfe_points -- only mae_points disagreed). Rows stamped
+# "1.0.0" (or NULL, for rows predating this column) used the old signed
+# convention and were deliberately left un-rewritten -- do not average or
+# otherwise combine their mae_points with "1.1.0"+ rows without accounting
+# for the sign difference.
+EXECUTION_MODEL_VERSION = "1.1.0"
 
 # Bump when research/paper_learning.py::_failure_class's classification logic
 # changes. Unlike the versions above (stamped once at generation time and

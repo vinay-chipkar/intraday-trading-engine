@@ -63,15 +63,42 @@ def latest_feature_snapshot(
     timeframe: str = "1m",
     support_window: int = 20,
 ) -> dict:
-    """Build one serializable snapshot from the latest available candle only."""
+    """Build one serializable snapshot from the latest available candle only.
+
+    Re-enriches `df` independently via add_feature_engine (its own support/
+    resistance/trend definition, not strategy/point_in_time.py's) -- used as
+    a fallback for observations that predate decision_features capture (see
+    research/paper_observer.py, research/learning_pipeline.py). Prefer the
+    captured vector when one exists; this recomputation isn't guaranteed to
+    match it exactly, and is vulnerable to candles being revised after the
+    signal was generated (see market/ingestion.py's upsert_candles).
+    """
     enriched = add_feature_engine(df, support_window=support_window)
     if enriched.empty:
         raise ValueError("Cannot build a feature snapshot from an empty dataframe")
+    return snapshot_from_row(enriched.iloc[-1], symbol=symbol, instrument_key=instrument_key, timeframe=timeframe)
 
-    row = enriched.iloc[-1]
+
+def snapshot_from_row(row, *, symbol: str, instrument_key: str, timeframe: str = "1m") -> dict:
+    """Build one serializable feature snapshot from an already-enriched row.
+
+    Shared by latest_feature_snapshot (re-enriches candles independently, for
+    tables/observations that don't have a captured vector) and
+    research/paper_observer.py (captures this directly from the exact row
+    strategy/point_in_time.py::enrich_point_in_time built for the live
+    signal). Extracting this as one function is what lets both callers
+    produce the identically-shaped snapshot dict from whichever row they
+    have, instead of each hand-rolling its own subset of fields.
+    """
     close = float(row["close"])
-    support = float(row["support"])
-    resistance = float(row["resistance"])
+    # None (not just falsy/0) is possible here for both live-captured rows
+    # (strategy/point_in_time.py: no pivot confirmed yet this early in the
+    # session) and re-enriched ones -- float(None) would raise, so this must
+    # be checked before casting, not after.
+    raw_support = row.get("support")
+    raw_resistance = row.get("resistance")
+    support = float(raw_support) if raw_support is not None else None
+    resistance = float(raw_resistance) if raw_resistance is not None else None
 
     distance_to_support = ((close - support) / support * 100.0) if support else 0.0
     distance_to_resistance = ((resistance - close) / resistance * 100.0) if resistance else 0.0

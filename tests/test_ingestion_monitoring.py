@@ -137,6 +137,43 @@ def test_clean_batch_writes_no_data_quality_events(isolated_db, monkeypatch):
     assert count == 0
 
 
+def test_a_revised_bar_on_repeated_ingestion_is_reconciled_and_flagged(isolated_db, monkeypatch):
+    # First tick: normal ingestion.
+    api_first = _FakeAPI({"NSE_EQ|AAA": _clean_frame("AAA"), "NSE_EQ|BBB": _clean_frame("BBB")})
+    monkeypatch.setattr(ingestion, "UpstoxREST", lambda: api_first)
+    ingestion.ingest_symbols(interval=1)
+
+    # Second tick: Upstox returns the same day's candles again, but AAA's
+    # first bar's close/volume have been corrected (a provisional bar
+    # finalized). A naive "only rows after last_stored" filter would never
+    # even see this, since it isn't the latest bar.
+    revised_aaa = _candle_frame(
+        [
+            (pd.Timestamp("2026-08-12 09:15:00", tz="Asia/Kolkata"), 100, 101, 99, 100.9, 1300, 0),
+            (pd.Timestamp("2026-08-12 09:16:00", tz="Asia/Kolkata"), 100.5, 102, 99, 101, 1100, 0),
+        ]
+    )
+    api_second = _FakeAPI({"NSE_EQ|AAA": revised_aaa, "NSE_EQ|BBB": _clean_frame("BBB")})
+    monkeypatch.setattr(ingestion, "UpstoxREST", lambda: api_second)
+    ingestion.ingest_symbols(interval=1)
+
+    connection = db.conn()
+    stored_close, stored_volume = connection.execute(
+        "SELECT close, volume FROM candles WHERE instrument_key='NSE_EQ|AAA' "
+        "AND timestamp = TIMESTAMPTZ '2026-08-12 09:15:00+05:30'"
+    ).fetchone()
+    event = connection.execute(
+        "SELECT symbol, issue_type, details FROM data_quality_events WHERE issue_type='CANDLE_REVISED'"
+    ).fetchone()
+    connection.close()
+
+    assert stored_close == pytest.approx(100.9)  # the correction was actually applied
+    assert stored_volume == pytest.approx(1300)
+    assert event is not None
+    assert event[0] == "AAA"
+    assert "100.9" in event[2] or "100.9" in str(event[2])  # revision details captured
+
+
 def test_empty_results_batch_is_recorded_as_failed(isolated_db, monkeypatch):
     # ingest_symbols itself always has >=1 instrument here (guarded by
     # LookupError above), but _record_ingestion_run must not divide by zero

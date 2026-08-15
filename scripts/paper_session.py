@@ -3,17 +3,13 @@ from __future__ import annotations
 import argparse
 import time
 from datetime import datetime, time as dt_time
-from zoneinfo import ZoneInfo
 
 from config.settings import settings
 from intraday_engine.market.ingestion import assess_ingestion_results, ingest_symbols
+from intraday_engine.market.session import IST, MARKET_CLOSE, MARKET_OPEN
 from intraday_engine.research.daily_cycle import run_daily_cycle
 from intraday_engine.research.paper_observer import observe_once
 from intraday_engine.research.paper_outcomes import evaluate_pending, outcome_summary
-
-IST = ZoneInfo("Asia/Kolkata")
-MARKET_OPEN = dt_time(9, 15)
-MARKET_CLOSE = dt_time(15, 30)
 
 # If most/all ticks in a session fail, or a tick's observations are entirely
 # stale/missing, that means the data pipeline (not just one symbol) is broken.

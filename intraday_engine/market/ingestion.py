@@ -10,8 +10,7 @@ from intraday_engine.market.upstox import UpstoxREST
 from intraday_engine.storage.db import (
     conn,
     get_instruments,
-    insert_candles,
-    latest_candle_timestamp,
+    upsert_candles,
 )
 
 
@@ -40,10 +39,17 @@ def assess_ingestion_results(results: list[IngestionResult]) -> None:
     """
     if not results:
         raise IngestionFailure("ingestion produced no results at all (empty symbol universe?)")
-    failed = [result for result in results if result.error]
+    # A well-formed-but-empty response (rows_received == 0, no exception) is
+    # not "healthy" either -- the intraday endpoint returns the whole
+    # trading day's candles on every call, so an empty body during market
+    # hours means ingestion silently produced nothing usable for that
+    # symbol, indistinguishable in effect from an outright failure.
+    failed = [result for result in results if result.error or result.rows_received == 0]
     success_ratio = (len(results) - len(failed)) / len(results)
     if success_ratio < MIN_INGESTION_SUCCESS_RATIO:
-        failed_symbols = ", ".join(result.symbol for result in failed)
+        failed_symbols = ", ".join(
+            f"{result.symbol}: {result.error or 'empty response'}" for result in failed
+        )
         raise IngestionFailure(
             f"ingestion failed for {len(failed)}/{len(results)} symbols "
             f"({success_ratio:.0%} succeeded, below the {MIN_INGESTION_SUCCESS_RATIO:.0%} "
@@ -59,6 +65,7 @@ class IngestionResult:
     last_timestamp: object | None
     quality: dict[str, int | bool]
     error: str | None = None
+    revised_candles: tuple[dict, ...] = ()
 
 
 def ingest_symbol(
@@ -83,18 +90,22 @@ def ingest_symbol(
             interval=interval_key,
         )
 
-        last_stored = latest_candle_timestamp(instrument_key, interval_key)
-        if last_stored is not None:
-            normalized = normalized[normalized["timestamp"] > last_stored].copy()
-
-        inserted = insert_candles(normalized)
-        last_timestamp = normalized["timestamp"].max() if not normalized.empty else last_stored
+        # Every fetched candle is reconciled against what's already stored
+        # (not just rows after the previously-latest timestamp): Upstox
+        # commonly revises a recent bar's OHLCV as more trades settle before
+        # it's finalized, and a "> last_stored" filter would silently discard
+        # that correction forever, keeping the stale original value.
+        upsert_result = upsert_candles(normalized)
+        inserted = upsert_result["inserted"]
+        revised = tuple(upsert_result["revised"])
+        last_timestamp = normalized["timestamp"].max() if not normalized.empty else None
         return IngestionResult(
             symbol=symbol,
             rows_received=len(frame),
             rows_inserted=inserted,
             last_timestamp=last_timestamp,
             quality=report,
+            revised_candles=revised,
         )
     except Exception as exc:
         LOGGER.exception("Intraday ingestion failed for %s", symbol)
@@ -175,12 +186,15 @@ def _record_data_quality_events(results: list[IngestionResult]) -> None:
             or result.quality.get("negative_volume")
             or result.quality.get("null_timestamps")
             or result.quality.get("monotonic") is False
+            or result.quality.get("session_gaps")
+            or result.quality.get("outside_session")
         )
     ]
     empty_flagged = [
         result for result in results if result.error is None and result.rows_received == 0
     ]
-    if not quality_flagged and not empty_flagged:
+    revised_flagged = [result for result in results if result.revised_candles]
+    if not quality_flagged and not empty_flagged and not revised_flagged:
         return
     event_time = datetime.now(timezone.utc)
     connection = conn()
@@ -202,6 +216,22 @@ def _record_data_quality_events(results: list[IngestionResult]) -> None:
                     "INGESTION_QUALITY",
                     str(issues),
                 ],
+            )
+        for result in revised_flagged:
+            details = {
+                "count": len(result.revised_candles),
+                "revisions": [
+                    {
+                        "timestamp": str(row["timestamp"]),
+                        "old": {k: row[f"old_{k}"] for k in ("open", "high", "low", "close", "volume")},
+                        "new": {k: row[f"new_{k}"] for k in ("open", "high", "low", "close", "volume")},
+                    }
+                    for row in result.revised_candles
+                ],
+            }
+            connection.execute(
+                "INSERT INTO data_quality_events VALUES (?, ?, ?, ?, ?, ?)",
+                [event_time, result.symbol, None, result.last_timestamp, "CANDLE_REVISED", str(details)],
             )
     finally:
         connection.close()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from intraday_engine.market.session import MARKET_CLOSE, MARKET_OPEN
+
 
 CANDLE_COLUMNS = [
     "timestamp",
@@ -66,6 +68,31 @@ def normalize_candles(
     ]
 
 
+def _session_gap_count(timestamps: pd.Series) -> int:
+    """Count missing 1-minute boundaries strictly between the earliest and
+    latest timestamp present -- an internal consistency check on what was
+    actually received (independent of "now"/staleness, which is a separate
+    concern). Returns 0 if fewer than two distinct minutes are present."""
+    clean = timestamps.dropna().dt.floor("min").drop_duplicates().sort_values()
+    if len(clean) < 2:
+        return 0
+    expected = pd.date_range(clean.iloc[0], clean.iloc[-1], freq="1min")
+    return int(len(expected) - len(clean))
+
+
+def _outside_session_count(timestamps: pd.Series) -> int:
+    """Count candles whose local (Asia/Kolkata) time falls outside the NSE
+    cash-segment session (09:15-15:30), a session-boundary violation."""
+    local = timestamps.dropna()
+    if local.empty:
+        return 0
+    if local.dt.tz is None:
+        local = local.dt.tz_localize("UTC")
+    local = local.dt.tz_convert("Asia/Kolkata")
+    times = local.dt.time
+    return int(((times < MARKET_OPEN) | (times > MARKET_CLOSE)).sum())
+
+
 def quality_report(frame: pd.DataFrame) -> dict[str, int | bool]:
     """Return deterministic quality metrics without mutating the input."""
     if frame is None or frame.empty:
@@ -76,6 +103,8 @@ def quality_report(frame: pd.DataFrame) -> dict[str, int | bool]:
             "negative_volume": 0,
             "null_timestamps": 0,
             "monotonic": True,
+            "session_gaps": 0,
+            "outside_session": 0,
         }
 
     timestamps = pd.to_datetime(frame["timestamp"], errors="coerce")
@@ -90,4 +119,6 @@ def quality_report(frame: pd.DataFrame) -> dict[str, int | bool]:
         "negative_volume": int((pd.to_numeric(frame["volume"], errors="coerce") < 0).sum()),
         "null_timestamps": int(timestamps.isna().sum()),
         "monotonic": bool(timestamps.dropna().is_monotonic_increasing),
+        "session_gaps": _session_gap_count(timestamps),
+        "outside_session": _outside_session_count(timestamps),
     }

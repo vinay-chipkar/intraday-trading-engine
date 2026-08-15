@@ -40,3 +40,23 @@ def test_exactly_half_success_is_tolerated():
 def test_raises_on_empty_results():
     with pytest.raises(IngestionFailure, match="no results"):
         assess_ingestion_results([])
+
+
+def _empty_response_result(symbol: str) -> IngestionResult:
+    # A well-formed response with zero candles and no exception -- must not
+    # be treated as a healthy symbol.
+    return IngestionResult(
+        symbol=symbol, rows_received=0, rows_inserted=0, last_timestamp=None, quality={}, error=None,
+    )
+
+
+def test_empty_response_with_no_error_is_not_healthy():
+    results = [_empty_response_result(s) for s in "ABCDE"] + [_result("F")]
+    with pytest.raises(IngestionFailure, match="5/6 symbols"):
+        assess_ingestion_results(results)
+
+
+def test_empty_response_failure_message_distinguishes_from_a_real_error():
+    results = [_empty_response_result("A"), _result("B", error="timeout")]
+    with pytest.raises(IngestionFailure, match=r"A: empty response.*B: timeout"):
+        assess_ingestion_results(results)

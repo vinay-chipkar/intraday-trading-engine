@@ -287,3 +287,54 @@ def test_restore_tolerates_a_table_gaining_a_new_column_between_persists(source_
         result.close()
     assert rows["obs-day1"] is None  # predates the column -- honestly NULL, not fabricated
     assert rows["obs-day2"] == "2.0.0"
+
+
+# --- a partition's row count stays the same but its content changes (real
+# scenario: a candle revised in place by upsert_candles, or any other
+# in-place UPDATE) -- persist must detect this via content hash, not count ---
+
+
+def test_persist_detects_a_same_row_count_content_revision(source_db, tmp_path):
+    root = tmp_path / "warehouse"
+    persist_warehouse(str(source_db), root)  # first persist, establishes the manifest
+
+    from intraday_engine.storage.warehouse.manifest import load_manifest
+
+    manifest_before = load_manifest(root)
+    candle_entry_path = next(
+        path for path, entry in manifest_before.items()
+        if entry["table"] == "candles" and entry["partition"] == "date=2026-08-11"
+    )
+    checksum_before = manifest_before[candle_entry_path]["sha256"]
+    rows_before = manifest_before[candle_entry_path]["rows"]
+
+    # Revise one candle's close value in place -- same row count, different content.
+    connection = duckdb.connect(str(source_db))
+    connection.execute(
+        "UPDATE candles SET close = 999.0 "
+        "WHERE instrument_key = 'NSE_EQ|AAA' AND timestamp = TIMESTAMPTZ '2026-08-11 03:45:00+00'"
+    )
+    connection.close()
+
+    summary = persist_warehouse(str(source_db), root)
+    assert candle_entry_path in summary["written"]  # re-written, not skipped, despite unchanged row count
+
+    manifest_after = load_manifest(root)
+    assert manifest_after[candle_entry_path]["rows"] == rows_before  # row count genuinely unchanged
+    assert manifest_after[candle_entry_path]["sha256"] != checksum_before  # but content hash caught the revision
+
+    target = tmp_path / "restored.duckdb"
+    restore_warehouse(root, str(target))
+    restored_close = conn(path=str(target)).execute(
+        "SELECT close FROM candles WHERE instrument_key = 'NSE_EQ|AAA' "
+        "AND timestamp = TIMESTAMPTZ '2026-08-11 03:45:00+00'"
+    ).fetchone()[0]
+    assert restored_close == 999.0  # the revision survived the persist -> restore round trip
+
+
+def test_persist_still_skips_a_genuinely_unchanged_partition(source_db, tmp_path):
+    root = tmp_path / "warehouse"
+    persist_warehouse(str(source_db), root)
+    summary = persist_warehouse(str(source_db), root)  # nothing changed
+    assert summary["written"] == []
+    assert len(summary["skipped"]) > 0

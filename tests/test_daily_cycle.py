@@ -12,8 +12,13 @@ def test_daily_cycle_refuses_live_mode():
 
 
 def _ingestion_result(symbol: str, *, error: str | None = None) -> IngestionResult:
+    # rows_received=0 now counts as an unhealthy result on its own (see
+    # assess_ingestion_results), so a "successful" symbol here must carry a
+    # realistic non-zero row count -- otherwise every symbol looks failed
+    # regardless of whether `error` is set.
     return IngestionResult(
-        symbol=symbol, rows_received=0, rows_inserted=0, last_timestamp=None, quality={}, error=error
+        symbol=symbol, rows_received=0 if error else 5, rows_inserted=0 if error else 5,
+        last_timestamp=None, quality={}, error=error,
     )
 
 
