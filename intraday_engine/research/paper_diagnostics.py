@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS research_diagnostics(
 _BREAKDOWN_DIMENSIONS = (
     "action", "candidate_score_band", "signal_score_band", "rvol_band",
     "market_regime", "vwap_condition", "ema_alignment", "rsi_band", "trend",
+    "market_context_status",
 )
 
 
@@ -70,7 +71,7 @@ def _load_evaluated_population() -> pd.DataFrame:
             """
             SELECT
                 o.observation_id, o.symbol, o.signal_action AS action, o.signal_score,
-                o.candidate_score, o.market_regime,
+                o.candidate_score, o.market_regime, o.market_context_status,
                 p.outcome, p.pnl_points, p.r_multiple, p.exit_time, p.evaluated_at,
                 f.rsi14, f.vwap, f.close AS feature_close, f.ema9, f.ema20, f.ema50,
                 f.trend, f.relative_volume
@@ -116,6 +117,11 @@ def _add_derived_dimensions(df: pd.DataFrame) -> pd.DataFrame:
     out["ema_alignment"] = out.apply(_ema_alignment, axis=1)
     out["trend"] = out["trend"].fillna("unknown")
     out["market_regime"] = out["market_regime"].fillna("unknown")
+    # Rows persisted before this column existed predate the fix too -- honest
+    # "unknown", not assumed AVAILABLE. Never coalesced with market_regime's
+    # own "unknown" bucket: this is specifically about whether context was
+    # captured at all, distinguishable from a genuinely NEUTRAL regime.
+    out["market_context_status"] = out["market_context_status"].fillna("unknown")
     return out
 
 

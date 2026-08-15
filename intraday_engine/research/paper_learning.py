@@ -6,6 +6,7 @@ from datetime import date
 import pandas as pd
 
 from intraday_engine.storage.db import conn
+from intraday_engine.versioning import FAILURE_CLASSIFIER_VERSION
 
 
 LEARNING_SCHEMA = """
@@ -37,6 +38,12 @@ def ensure_learning_table(path: str | None = None) -> None:
     connection = conn(path)
     try:
         connection.execute(LEARNING_SCHEMA)
+        # New rows only (see intraday_engine/versioning.py). Rows persisted
+        # before this column existed are NULL, which
+        # rebuild_stale_failure_classifications() treats as stale.
+        connection.execute(
+            "ALTER TABLE paper_failure_analysis ADD COLUMN IF NOT EXISTS diagnostics_version VARCHAR"
+        )
     finally:
         connection.close()
 
@@ -107,6 +114,7 @@ def build_failure_analysis() -> int:
                 frame["outcome"], frame["side"], frame["signal_reasons"], frame["signal_blockers"]
             )
         ]
+        frame["diagnostics_version"] = FAILURE_CLASSIFIER_VERSION
         connection.register("paper_failure_analysis_in", frame)
         connection.execute("INSERT OR IGNORE INTO paper_failure_analysis SELECT * FROM paper_failure_analysis_in")
         return len(frame)
@@ -115,6 +123,41 @@ def build_failure_analysis() -> int:
             connection.unregister("paper_failure_analysis_in")
         except Exception:
             pass
+        connection.close()
+
+
+def rebuild_stale_failure_classifications() -> int:
+    """Recompute failure_class for every row whose diagnostics_version
+    predates the current classifier (NULL counts as stale -- every row
+    persisted before this column existed).
+
+    failure_class is a pure function of columns paper_failure_analysis
+    already stores immutably (outcome, side, signal_reasons, signal_blockers)
+    -- nothing about the original trade (pnl_points, r_multiple, entry/exit,
+    outcome itself) is touched, so this only ever corrects a derived label,
+    never rewrites what actually happened. Idempotent: a no-op once every
+    row already matches FAILURE_CLASSIFIER_VERSION.
+    """
+    ensure_learning_table()
+    connection = conn()
+    try:
+        stale = connection.execute(
+            """
+            SELECT observation_id, outcome, side, signal_reasons, signal_blockers
+            FROM paper_failure_analysis
+            WHERE diagnostics_version IS NULL OR diagnostics_version != ?
+            """,
+            [FAILURE_CLASSIFIER_VERSION],
+        ).fetchall()
+        for observation_id, outcome, side, reasons, blockers in stale:
+            new_class = _failure_class(outcome, side, reasons, blockers)
+            connection.execute(
+                "UPDATE paper_failure_analysis SET failure_class = ?, diagnostics_version = ? "
+                "WHERE observation_id = ?",
+                [new_class, FAILURE_CLASSIFIER_VERSION, observation_id],
+            )
+        return len(stale)
+    finally:
         connection.close()
 
 

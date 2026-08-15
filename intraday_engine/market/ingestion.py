@@ -156,8 +156,16 @@ def _record_data_quality_events(results: list[IngestionResult]) -> None:
     quality_report() already computes these metrics per symbol during
     ingest_symbol(); previously the result was only used to decide whether to
     proceed, never stored, so there was no history to look back over.
+
+    A response that parses fine but carries zero candles (rows_received == 0,
+    error is None) is also flagged here. The intraday endpoint returns the
+    *whole trading day's* candles on every call, not a delta since last poll,
+    so a genuinely empty body during market hours is exactly the kind of
+    "transient failure that looks like a valid, boring result" this pipeline
+    must never let through unflagged -- it is otherwise indistinguishable
+    from "nothing new happened" and would silently stall staleness detection.
     """
-    flagged = [
+    quality_flagged = [
         result
         for result in results
         if result.quality
@@ -169,12 +177,20 @@ def _record_data_quality_events(results: list[IngestionResult]) -> None:
             or result.quality.get("monotonic") is False
         )
     ]
-    if not flagged:
+    empty_flagged = [
+        result for result in results if result.error is None and result.rows_received == 0
+    ]
+    if not quality_flagged and not empty_flagged:
         return
     event_time = datetime.now(timezone.utc)
     connection = conn()
     try:
-        for result in flagged:
+        for result in empty_flagged:
+            connection.execute(
+                "INSERT INTO data_quality_events VALUES (?, ?, ?, ?, ?, ?)",
+                [event_time, result.symbol, None, result.last_timestamp, "EMPTY_RESPONSE", "{}"],
+            )
+        for result in quality_flagged:
             issues = {k: v for k, v in result.quality.items() if k != "rows"}
             connection.execute(
                 "INSERT INTO data_quality_events VALUES (?, ?, ?, ?, ?, ?)",

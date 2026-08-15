@@ -59,7 +59,7 @@ def test_daily_cycle_tolerates_one_failed_symbol(monkeypatch):
         "ingest_symbols",
         lambda interval: [_ingestion_result("A"), _ingestion_result("B"), _ingestion_result("C", error="timeout")],
     )
-    monkeypatch.setattr(daily_cycle, "latest_market_context", lambda: {})
+    monkeypatch.setattr(daily_cycle, "latest_market_context", lambda trading_date=None: {})
     # run_daily_cycle constructs UpstoxREST() inline as scan_top10's argument
     # *before* the (mocked) scan_top10 is ever called, so mocking scan_top10
     # alone doesn't stop the real client from being built -- and UpstoxREST()

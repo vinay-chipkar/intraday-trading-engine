@@ -118,7 +118,19 @@ def restore_warehouse(root: str | Path, target_db_path: str) -> dict[str, int]:
             # DuckDB auto-detect Hive partitioning would inject a *second*,
             # synthetic `date` column and break the positional column count
             # the target table expects.
-            read_parquet_sql = f"read_parquet([{file_list_sql}], hive_partitioning=false)"
+            #
+            # union_by_name=true + "INSERT ... BY NAME" (below) instead of
+            # positional SELECT *: a table can gain new nullable columns
+            # between one persist and the next (e.g. new provenance fields),
+            # so a single table's partitions are not guaranteed to all have
+            # the same column set. Without union_by_name, read_parquet on a
+            # file list with differing schemas silently reads later files
+            # positionally against the first file's columns -- verified this
+            # drops/misaligns data rather than erroring. By-name matching
+            # fills genuinely-missing columns (old partitions predating a new
+            # column) with NULL instead, which is the correct, honest value
+            # for data that was never actually captured.
+            read_parquet_sql = f"read_parquet([{file_list_sql}], hive_partitioning=false, union_by_name=true)"
             actual_rows = connection.execute(f"SELECT COUNT(*) FROM {read_parquet_sql}").fetchone()[0]
             if actual_rows != expected_rows:
                 raise WarehouseRestoreError(
@@ -126,7 +138,7 @@ def restore_warehouse(root: str | Path, target_db_path: str) -> dict[str, int]:
                     f"{len(entries)} file(s), but read_parquet reports {actual_rows}"
                 )
 
-            connection.execute(f"INSERT INTO {spec.name} SELECT * FROM {read_parquet_sql}")
+            connection.execute(f"INSERT INTO {spec.name} BY NAME SELECT * FROM {read_parquet_sql}")
             restored_counts[spec.name] = actual_rows
     finally:
         connection.close()

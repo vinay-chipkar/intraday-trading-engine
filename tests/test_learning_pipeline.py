@@ -245,7 +245,7 @@ def test_observation_with_no_matching_candle_is_skipped_not_guessed(isolated_db)
         """
         INSERT INTO paper_outcomes VALUES
         (?, now(), TIMESTAMPTZ '2026-08-11 04:16:00+00', TIMESTAMPTZ '2026-08-11 04:20:00+00',
-         'LONG', 100.0, 100.3, 99.0, 100.3, 'TARGET', 0.3, 0.3, 4, 0.3, -0.1)
+         'LONG', 100.0, 100.3, 99.0, 100.3, 'TARGET', 0.3, 0.3, 4, 0.3, -0.1, '1.0.0')
         """,
         [obs_id],
     )

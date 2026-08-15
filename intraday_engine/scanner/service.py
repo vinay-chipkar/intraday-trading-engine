@@ -208,7 +208,7 @@ def scan_universe(client: UpstoxREST, config: ScannerConfig | None = None, tradi
     rows = _build_rows(client, config, trading_date)
     if not rows:
         return []
-    ranked = rank_candidates(rows, market_score=latest_market_score(), limit=None)
+    ranked = rank_candidates(rows, market_score=latest_market_score(trading_date), limit=None)
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
     candidate_df = pd.DataFrame([

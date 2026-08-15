@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from intraday_engine.research.paper_learning import build_failure_analysis, learning_report
+from intraday_engine.research.paper_learning import (
+    build_failure_analysis,
+    learning_report,
+    rebuild_stale_failure_classifications,
+)
 from intraday_engine.research.paper_outcomes import evaluate_pending, outcome_summary
 from intraday_engine.storage.db import conn
 
@@ -30,6 +34,11 @@ def main() -> None:
 
     evaluation = evaluate_pending(max_holding_bars=args.max_holding_bars)
     new_failures = build_failure_analysis()
+    # Idempotent: only touches rows whose failure_class was computed under an
+    # older classifier version (e.g. the pre-fix substring-match VWAP-conflict
+    # bug) -- never rewrites the underlying trade outcome, only the derived
+    # diagnostic label.
+    rebuilt_failures = rebuild_stale_failure_classifications()
     summary = outcome_summary()
     report = learning_report()
 
@@ -43,6 +52,7 @@ def main() -> None:
     print(json.dumps({
         "evaluation": evaluation,
         "new_failure_rows": new_failures,
+        "rebuilt_stale_diagnostic_rows": rebuilt_failures,
         "summary": summary,
         "exported": {"observations": observations, "outcomes": outcomes, "failures": failures},
         "output": str(root),

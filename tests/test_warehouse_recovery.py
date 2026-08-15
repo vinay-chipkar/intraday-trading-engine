@@ -223,3 +223,67 @@ def test_warehouse_persist_cli_propagates_failure_as_an_exception(source_db, tmp
     )
     with pytest.raises(Exception, match="schema_version"):
         warehouse_persist.main()
+
+
+# --- a table gaining a new nullable column between persists (real scenario:
+# paper_observations/paper_outcomes gained provenance columns after some
+# production data had already been persisted with the narrower schema) ---
+
+_OBS_COLUMNS = (
+    "observation_id, observed_at, bar_time, trading_date, symbol, instrument_key, "
+    "scanner_rank, candidate_score, price_change_pct, relative_volume, vwap, "
+    "market_regime, market_score, signal_action, signal_score, confidence, "
+    "entry_price, stop_loss, target, signal_reasons, signal_blockers, status"
+)
+
+
+def _insert_observation(db_path: str, *, observation_id: str, trading_date: str, extra_cols: str = "", extra_vals: str = "") -> None:
+    connection = duckdb.connect(db_path)
+    columns = _OBS_COLUMNS + extra_cols
+    connection.execute(
+        f"""
+        INSERT INTO paper_observations ({columns}) VALUES
+            (?, now(), TIMESTAMPTZ '{trading_date} 05:00:00+00', DATE '{trading_date}', 'BBB', 'NSE_EQ|BBB',
+             1, 50.0, 1.0, 1.2, 100.0, 'NEUTRAL', 0.0, 'BUY', 60.0, 60.0,
+             100.0, 99.0, 101.0, '[]', '[]', 'NO_SIGNAL'{extra_vals})
+        """,
+        [observation_id],
+    )
+    connection.close()
+
+
+def test_restore_tolerates_a_table_gaining_a_new_column_between_persists(source_db, tmp_path):
+    # Real scenario this reproduces: paper_observations already had partitions
+    # persisted in production before it gained provenance columns (like
+    # strategy_version). build_source_db's ensure_observation_table() already
+    # creates that column today, so day 1 here drops it first to simulate the
+    # narrower, pre-provenance schema those already-persisted partitions have.
+    root = tmp_path / "warehouse"
+
+    connection = duckdb.connect(str(source_db))
+    connection.execute("ALTER TABLE paper_observations DROP COLUMN strategy_version")
+    connection.close()
+    _insert_observation(str(source_db), observation_id="obs-day1", trading_date="2026-08-11")
+    persist_warehouse(str(source_db), root)  # day 1: narrower schema, no strategy_version yet
+
+    from intraday_engine.research.paper_observer import ensure_observation_table
+
+    ensure_observation_table(str(source_db))  # re-adds it, exactly as a real next run would
+    _insert_observation(
+        str(source_db), observation_id="obs-day2", trading_date="2026-08-12",
+        extra_cols=", strategy_version", extra_vals=", '2.0.0'",
+    )
+    persist_warehouse(str(source_db), root)  # day 2: wider schema
+
+    target = tmp_path / "restored.duckdb"
+    restore_warehouse(root, str(target))  # must not raise on the mixed column counts
+
+    result = conn(path=str(target))
+    try:
+        rows = dict(
+            result.execute("SELECT observation_id, strategy_version FROM paper_observations").fetchall()
+        )
+    finally:
+        result.close()
+    assert rows["obs-day1"] is None  # predates the column -- honestly NULL, not fabricated
+    assert rows["obs-day2"] == "2.0.0"

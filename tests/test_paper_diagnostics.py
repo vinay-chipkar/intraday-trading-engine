@@ -36,6 +36,7 @@ def _insert_evaluated(
     signal_score: float = 65.0,
     relative_volume: float = 1.2,
     market_regime: str = "NEUTRAL",
+    market_context_status: str = "AVAILABLE",
     outcome: str = "TARGET",
     pnl_points: float = 1.0,
     r_multiple: float = 1.0,
@@ -50,21 +51,25 @@ def _insert_evaluated(
                 (observation_id, observed_at, bar_time, trading_date, symbol, instrument_key,
                  scanner_rank, candidate_score, price_change_pct, relative_volume, vwap,
                  market_regime, market_score, signal_action, signal_score, confidence,
-                 entry_price, stop_loss, target, signal_reasons, signal_blockers, status)
+                 entry_price, stop_loss, target, signal_reasons, signal_blockers, status,
+                 market_context_status)
             VALUES
                 (?, now(), TIMESTAMPTZ '2026-08-11 05:00:00+00', DATE '2026-08-11', 'TEST', 'NSE_EQ|TEST',
                  1, ?, 1.0, ?, 100.0,
                  ?, 0.0, ?, ?, ?,
-                 100.0, 99.0, 101.0, '[]', '[]', 'EVALUATED')
+                 100.0, 99.0, 101.0, '[]', '[]', 'EVALUATED', ?)
             """,
-            [observation_id, candidate_score, relative_volume, market_regime, action, signal_score, signal_score],
+            [
+                observation_id, candidate_score, relative_volume, market_regime, action, signal_score, signal_score,
+                market_context_status,
+            ],
         )
         connection.execute(
             f"""
             INSERT INTO paper_outcomes VALUES
                 (?, TIMESTAMPTZ '{evaluated_at}', TIMESTAMPTZ '2026-08-11 05:01:00+00',
                  TIMESTAMPTZ '{evaluated_at}', 'LONG', 100.0, {100.0 + pnl_points}, 99.0, 101.0,
-                 ?, ?, ?, 5, 0.5, -0.1)
+                 ?, ?, ?, 5, 0.5, -0.1, '1.0.0')
             """,
             [observation_id, outcome, pnl_points, r_multiple],
         )
@@ -215,6 +220,42 @@ def test_vwap_and_ema_conditions_derived_from_feature_snapshot(isolated_db):
     ema_rows = {row["ema_alignment"]: row for row in report["breakdowns"]["ema_alignment"]["summary"]}
     assert "ABOVE_VWAP" in vwap_rows
     assert "BULLISH_ALIGNED" in ema_rows
+
+
+def test_market_context_missing_is_reported_separately_from_genuine_neutral(isolated_db):
+    _insert_evaluated(
+        observation_id="obs-available", market_regime="NEUTRAL", market_context_status="AVAILABLE",
+        outcome="TARGET", pnl_points=1.0, r_multiple=1.0,
+    )
+    _insert_evaluated(
+        observation_id="obs-missing", market_regime="NEUTRAL", market_context_status="MARKET_CONTEXT_MISSING",
+        outcome="STOP", pnl_points=-1.0, r_multiple=-1.0,
+    )
+    report = build_diagnostics_report(min_sample_size=1)
+    by_status = {row["market_context_status"]: row for row in report["breakdowns"]["market_context_status"]["summary"]}
+
+    assert set(by_status) == {"AVAILABLE", "MARKET_CONTEXT_MISSING"}
+    assert by_status["AVAILABLE"]["trades"] == 1
+    assert by_status["MARKET_CONTEXT_MISSING"]["trades"] == 1
+    # Same market_regime ("NEUTRAL") for both -- only the explicit status
+    # dimension separates a genuinely neutral market from a missing capture.
+    assert by_status["AVAILABLE"]["win_rate_pct"] == pytest.approx(100.0)
+    assert by_status["MARKET_CONTEXT_MISSING"]["win_rate_pct"] == pytest.approx(0.0)
+
+
+def test_historical_rows_without_the_column_report_as_unknown_not_available(isolated_db):
+    # A row predating this fix (market_context_status never populated) must
+    # not be silently assumed AVAILABLE.
+    _insert_evaluated(observation_id="obs-legacy")
+    connection = db.conn()
+    connection.execute(
+        "UPDATE paper_observations SET market_context_status = NULL WHERE observation_id = 'obs-legacy'"
+    )
+    connection.close()
+
+    report = build_diagnostics_report()
+    statuses = {row["market_context_status"] for row in report["breakdowns"]["market_context_status"]["summary"]}
+    assert statuses == {"unknown"}
 
 
 def test_rvol_band_uses_the_live_feature_snapshot_not_the_frozen_scanner_snapshot(isolated_db):

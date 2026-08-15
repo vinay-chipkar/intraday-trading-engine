@@ -48,6 +48,35 @@ def test_stop_wins_when_stop_and_target_are_both_inside_one_bar():
     assert result.trades[0].r_multiple == pytest.approx(-1.0)
 
 
+def test_stop_wins_when_stop_and_target_are_both_inside_one_bar_short_side():
+    # Long/short symmetry check for the same conservative assumption: a
+    # SHORT's stop is above entry and target is below, so the mirrored bar
+    # (low breaches target, high breaches stop) must still resolve as STOP.
+    bars = _bars([
+        ("2026-08-10 09:20:00", "TEST", 100, 101, 99, 100),
+        ("2026-08-10 09:21:00", "TEST", 100, 103, 95, 97),
+    ])
+    result = backtest_signals([_signal(side="SHORT", stop=102, target=96)], bars)
+    assert result.trades[0].outcome == "STOP"
+    assert result.trades[0].exit_price == pytest.approx(102.0)
+    assert result.trades[0].r_multiple == pytest.approx(-1.0)
+
+
+def test_short_side_target_uses_next_bar_open_and_records_mfe_mae():
+    bars = _bars([
+        ("2026-08-10 09:20:00", "TEST", 100, 101, 99, 100),
+        ("2026-08-10 09:21:00", "TEST", 99, 100, 96, 97),
+    ])
+    result = backtest_signals([_signal(side="SHORT", stop=102, target=97)], bars)
+    trade = result.trades[0]
+    assert trade.outcome == "TARGET"
+    assert trade.entry_price == pytest.approx(99.0)
+    assert trade.exit_price == pytest.approx(97.0)
+    assert trade.r_multiple == pytest.approx(2.0 / 3.0)
+    assert trade.mfe_points == pytest.approx(3.0)  # entry(99) - low(96)
+    assert trade.mae_points == pytest.approx(1.0)  # high(100) - entry(99)
+
+
 def test_target_and_metrics_are_deterministic():
     bars = _bars([
         ("2026-08-10 09:20:00", "TEST", 100, 101, 99, 100),

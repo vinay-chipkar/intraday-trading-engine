@@ -66,7 +66,7 @@ def run_daily_cycle(
             )
             errors.extend(f"{result.symbol}: {result.error}" for result in failed)
 
-        context = latest_market_context() or {}
+        context = latest_market_context(trading_date) or {}
         candidates = scan_top10(
             UpstoxREST(),
             ScannerConfig(
