@@ -68,6 +68,28 @@ def test_round_trip_slippage_is_entry_plus_exit():
     assert model.round_trip_slippage_points() == pytest.approx(0.25)
 
 
+def test_brokerage_is_an_uncapped_linear_percentage_not_a_per_order_cap():
+    # Documents/locks in the fix: brokerage_pct is a flat percentage of
+    # turnover with no ceiling, because this module has no order-value/
+    # quantity information to evaluate a real "percentage OR flat fee,
+    # whichever is lower" cap against (see CostModel's docstring). Brokerage
+    # cost must scale exactly linearly with price, with no cap kicking in
+    # even at a price where a real per-order cap would clearly have bound.
+    brokerage_only = CostModel(
+        brokerage_pct=0.0003, exchange_txn_pct=0, sebi_pct=0, stt_sell_pct=0, stamp_duty_buy_pct=0, gst_pct=0
+    )
+    low_price_cost = brokerage_only.leg_cost_points(100.0, is_buy_leg=True)
+    high_price_cost = brokerage_only.leg_cost_points(1_000_000.0, is_buy_leg=True)
+
+    assert low_price_cost == pytest.approx(100.0 * 0.0003)
+    # A real discount-broker cap (e.g. Rs 20 flat OR 0.03% of turnover,
+    # whichever is lower) would have capped the high-price leg at a small
+    # flat fee; this implementation instead scales it up by the same factor
+    # as the price increased, proving no cap is silently applied.
+    assert high_price_cost == pytest.approx(1_000_000.0 * 0.0003)
+    assert high_price_cost / low_price_cost == pytest.approx(1_000_000.0 / 100.0)
+
+
 def test_invalid_side_raises():
     model = CostModel.realistic()
     with pytest.raises(ValueError, match="LONG or SHORT"):

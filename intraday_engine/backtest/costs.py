@@ -7,15 +7,20 @@ computed today), so every existing backtest/paper result is completely
 unaffected unless a caller explicitly asks for a cost breakdown.
 
 Rate defaults below are standard, widely-cited Indian discount-broker
-intraday-equity cash-segment rates (brokerage cap, STT, NSE exchange
-transaction charge, SEBI turnover fee, GST, stamp duty) as commonly quoted in
-broker cost calculators. They are illustrative planning assumptions, not
-values fetched from a live regulatory rate card -- verify against your actual
+intraday-equity cash-segment rates (brokerage, STT, NSE exchange transaction
+charge, SEBI turnover fee, GST, stamp duty) as commonly quoted in broker cost
+calculators. They are illustrative planning assumptions, not values fetched
+from a live regulatory rate card -- verify against your actual
 broker/exchange notification before treating results as precise. Every rate
 is a plain constructor argument; nothing here is hard-coded into strategy
 logic, and none of these numbers should ever be tuned to make a strategy
 look better -- that would defeat the entire point of separating gross from
 net performance.
+
+Brokerage specifically is a flat percentage-of-turnover assumption, not a
+true per-order cap (see CostModel's docstring) -- this module has no
+order-value/quantity information to evaluate a real "percentage OR flat fee,
+whichever is lower" cap against, and does not guess one.
 
 IMPORTANT -- existing paper-trading history: every paper trade recorded so
 far (research/paper_outcomes.py::evaluate_trade) was, and still is, recorded
@@ -34,9 +39,26 @@ from typing import Iterable
 
 @dataclass(frozen=True)
 class CostModel:
+    """Configurable per-share transaction-cost rates.
+
+    brokerage_pct is a flat percentage-of-turnover approximation, not the
+    real "brokerage_pct of turnover OR a flat fee per order, whichever is
+    lower" cap most Indian discount brokers actually charge. Implementing
+    that real cap correctly requires the order's actual value (price times
+    quantity) so the flat-fee side of the comparison means something -- the
+    trade representation this module operates on (backtest/engine.py's
+    BacktestTrade, research/paper_outcomes.py's outcome dicts) carries prices
+    only, never a quantity or notional size, and neither simulator does
+    position sizing today. Rather than silently guess a quantity to make a
+    "cap" comparison meaningful, brokerage here is deliberately left as an
+    uncapped, linear percentage of turnover -- correct as an illustrative
+    upper-bound-shaped assumption, but do not read it as "the real discount-
+    broker fee schedule."
+    """
+
     entry_slippage_points: float = 0.0
     exit_slippage_points: float = 0.0
-    brokerage_pct: float = 0.0003        # 0.03% of turnover per executed leg (typical discount-broker cap)
+    brokerage_pct: float = 0.0003        # 0.03% of turnover per executed leg, flat -- see class docstring: NOT a per-order cap
     stt_sell_pct: float = 0.00025        # 0.025% of the SELL leg's turnover only (intraday equity STT)
     exchange_txn_pct: float = 0.0000297  # ~0.00297% of turnover, both legs (NSE transaction charge)
     sebi_pct: float = 0.000001           # ~Rs 10 per crore of turnover, both legs
