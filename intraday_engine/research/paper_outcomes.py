@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 
 from intraday_engine.storage.db import conn
+from intraday_engine.versioning import EXECUTION_MODEL_VERSION
 
 
 OUTCOME_SCHEMA = """
@@ -33,6 +34,8 @@ def ensure_outcome_table(path: str | None = None) -> None:
     connection = conn(path)
     try:
         connection.execute(OUTCOME_SCHEMA)
+        # New rows only -- see intraday_engine/versioning.py.
+        connection.execute("ALTER TABLE paper_outcomes ADD COLUMN IF NOT EXISTS execution_model_version VARCHAR")
     finally:
         connection.close()
 
@@ -130,6 +133,7 @@ def evaluate_trade(
             "holding_bars": position - signal_index,
             "mfe_points": mfe,
             "mae_points": mae,
+            "execution_model_version": EXECUTION_MODEL_VERSION,
         }
 
     last = frame.iloc[max_end]
@@ -153,6 +157,7 @@ def evaluate_trade(
         "holding_bars": max_holding_bars,
         "mfe_points": mfe,
         "mae_points": mae,
+        "execution_model_version": EXECUTION_MODEL_VERSION,
     }
 
 

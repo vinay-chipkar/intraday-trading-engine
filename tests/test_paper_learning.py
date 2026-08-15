@@ -107,3 +107,69 @@ def test_learning_report_summary_does_not_raise_on_ambiguous_columns(isolated_db
     assert report["by_symbol_side"] == [
         {"symbol": "TEST", "side": "LONG", "trades": 1, "avg_r": 1.5, "net_points": 3.0}
     ]
+
+
+def _insert_stale_failure_row(*, observation_id: str, wrong_failure_class: str, diagnostics_version=None) -> None:
+    """A row as it would look if persisted under an older _failure_class
+    version -- correct outcome/side/pnl (never touched by a rebuild), but a
+    failure_class the CURRENT classifier would not have produced."""
+    connection = db.conn()
+    try:
+        connection.execute(
+            """
+            INSERT INTO paper_failure_analysis
+                (observation_id, evaluated_at, trading_date, symbol, side, outcome,
+                 pnl_points, r_multiple, signal_score, confidence, market_regime,
+                 market_score, scanner_rank, candidate_score, relative_volume,
+                 price_change_pct, signal_reasons, signal_blockers, failure_class,
+                 diagnostics_version)
+            VALUES
+                (?, now(), current_date, 'TEST', 'LONG', 'STOP',
+                 -1.0, -1.0, 70.0, 70.0, 'NEUTRAL',
+                 0.0, 1, 50.0, 1.2,
+                 0.5, '["price is above VWAP"]', '[]', ?, ?)
+            """,
+            [observation_id, wrong_failure_class, diagnostics_version],
+        )
+    finally:
+        connection.close()
+
+
+def test_rebuild_corrects_a_stale_pre_fix_classification_without_touching_the_trade(isolated_db):
+    from intraday_engine.versioning import FAILURE_CLASSIFIER_VERSION
+
+    paper_learning.ensure_learning_table()
+    # A LONG whose reasons say "price is above VWAP" (agreement, not conflict)
+    # was mislabeled STOP_WITH_VWAP_CONFLICT by the pre-fix classifier.
+    _insert_stale_failure_row(
+        observation_id="obs-stale", wrong_failure_class="STOP_WITH_VWAP_CONFLICT", diagnostics_version=None
+    )
+
+    rebuilt = paper_learning.rebuild_stale_failure_classifications()
+    assert rebuilt == 1
+
+    connection = db.conn()
+    try:
+        row = connection.execute(
+            "SELECT failure_class, diagnostics_version, pnl_points, r_multiple, outcome "
+            "FROM paper_failure_analysis WHERE observation_id = 'obs-stale'"
+        ).fetchone()
+    finally:
+        connection.close()
+    failure_class, diagnostics_version, pnl_points, r_multiple, outcome = row
+    assert failure_class == "STOP_OTHER"  # corrected
+    assert diagnostics_version == FAILURE_CLASSIFIER_VERSION
+    assert pnl_points == -1.0 and r_multiple == -1.0 and outcome == "STOP"  # untouched
+
+
+def test_rebuild_is_idempotent_and_leaves_already_current_rows_alone(isolated_db):
+    from intraday_engine.versioning import FAILURE_CLASSIFIER_VERSION
+
+    paper_learning.ensure_learning_table()
+    _insert_stale_failure_row(
+        observation_id="obs-current", wrong_failure_class="STOP_OTHER", diagnostics_version=FAILURE_CLASSIFIER_VERSION
+    )
+    assert paper_learning.rebuild_stale_failure_classifications() == 0
+
+    first_run_count = paper_learning.rebuild_stale_failure_classifications()
+    assert first_run_count == 0

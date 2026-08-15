@@ -13,6 +13,7 @@ from intraday_engine.scanner.service import ScannerConfig, scan_top10
 from intraday_engine.signals.engine import SignalConfig, TradeSignal, generate_signal
 from intraday_engine.storage.db import conn
 from intraday_engine.strategy.point_in_time import enrich_point_in_time
+from intraday_engine.versioning import FEATURE_ENGINE_VERSION, STRATEGY_VERSION, get_code_commit
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -66,6 +67,19 @@ def ensure_observation_table(path: str | None = None) -> None:
     connection = conn(path)
     try:
         connection.execute(OBSERVATION_SCHEMA)
+        # Provenance for new rows only (see intraday_engine/versioning.py) --
+        # historical rows predate these columns and stay NULL rather than
+        # being backfilled with a version they weren't actually generated with.
+        connection.execute("ALTER TABLE paper_observations ADD COLUMN IF NOT EXISTS strategy_version VARCHAR")
+        connection.execute("ALTER TABLE paper_observations ADD COLUMN IF NOT EXISTS feature_engine_version VARCHAR")
+        connection.execute("ALTER TABLE paper_observations ADD COLUMN IF NOT EXISTS code_commit VARCHAR")
+        # AVAILABLE | MARKET_CONTEXT_MISSING -- see _latest_context(). Keeps a
+        # missing premarket capture distinguishable from a genuinely neutral
+        # market (regime='NEUTRAL', a real string) rather than both looking
+        # like market_regime=None/market_score=0.0.
+        connection.execute(
+            "ALTER TABLE paper_observations ADD COLUMN IF NOT EXISTS market_context_status VARCHAR"
+        )
     finally:
         connection.close()
 
@@ -83,6 +97,7 @@ def build_observation(
     market_regime: str | None,
     market_score: float | None,
     bar_time: object,
+    market_context_status: str = "AVAILABLE",
     stale: bool = False,
 ) -> dict:
     action = signal.action
@@ -120,6 +135,10 @@ def build_observation(
         "signal_reasons": _json_tuple(signal.reasons),
         "signal_blockers": _json_tuple(signal.blockers),
         "status": status,
+        "strategy_version": STRATEGY_VERSION,
+        "feature_engine_version": FEATURE_ENGINE_VERSION,
+        "code_commit": get_code_commit(),
+        "market_context_status": market_context_status,
     }
 
 
@@ -185,7 +204,7 @@ def observe_once(
 ) -> list[dict]:
     observed_at = datetime.now().astimezone()
     trading_date = trading_date or observed_at.date()
-    context = _latest_context()
+    context = _latest_context(trading_date)
     market_score = float(context.get("score") or 0.0)
     candidates = scan_top10(
         UpstoxREST(),
@@ -206,6 +225,7 @@ def observe_once(
                 signal=signal,
                 market_regime=context.get("regime"),
                 market_score=market_score,
+                market_context_status=context.get("status", "AVAILABLE"),
                 bar_time=bar_time,
                 stale=is_bar_stale(bar_time, trading_date),
             )
@@ -214,14 +234,28 @@ def observe_once(
     return rows
 
 
-def _latest_context() -> dict:
+def _latest_context(trading_date: date) -> dict:
+    """Today's premarket snapshot only -- never a prior day's, even if it's
+    the most recently captured row (see storage/db.py::latest_market_context
+    for why an unscoped "most recent" query is a point-in-time integrity
+    risk here).
+
+    When no row exists for today, the *signal engine's* market_score input
+    still falls back to the same neutral 0.0 it always has (unchanged
+    scoring behavior) -- but the returned "status" is MARKET_CONTEXT_MISSING,
+    never AVAILABLE, so a caller can tell "context genuinely came back
+    neutral" apart from "context wasn't captured at all" instead of both
+    looking like an ordinary neutral market.
+    """
     connection = conn()
     try:
         row = connection.execute(
-            "SELECT regime, score FROM market_context ORDER BY captured_at DESC LIMIT 1"
+            "SELECT regime, score FROM market_context WHERE trading_date = ? "
+            "ORDER BY captured_at DESC LIMIT 1",
+            [trading_date],
         ).fetchone()
         if row is None:
-            return {"regime": None, "score": 0.0}
-        return {"regime": row[0], "score": row[1]}
+            return {"regime": None, "score": 0.0, "status": "MARKET_CONTEXT_MISSING"}
+        return {"regime": row[0], "score": row[1], "status": "AVAILABLE"}
     finally:
         connection.close()

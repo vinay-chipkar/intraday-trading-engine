@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import date
 from urllib.parse import quote
 
@@ -16,14 +18,42 @@ SYMBOL_ALIASES = {
     "TATAMOTORS": "TMPV",
 }
 
+# 429 (rate limited) and 5xx (server-side) are worth a bounded retry; any other
+# 4xx (bad request, unauthorized, not found) will not resolve itself on retry.
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+LOGGER = logging.getLogger(__name__)
+
+
+class UpstoxAPIError(RuntimeError):
+    """Raised when an Upstox response is not the JSON object shape every
+    caller in this module assumes -- a malformed/unexpected body must fail
+    loudly here rather than let a caller's blind .get("data", {}) silently
+    produce an empty-looking (but not explicitly flagged) result."""
+
+
+class AmbiguousInstrumentError(RuntimeError):
+    """Raised when instrument search returns more than one distinct
+    instrument_key for what should be a single, unambiguous trading symbol
+    (e.g. after a corporate action/relisting) -- resolving to "whichever the
+    API listed first" would be a silent, undetectable wrong-security risk."""
+
 
 class UpstoxREST:
-    def __init__(self, access_token: str | None = None, timeout: int = 15):
+    def __init__(
+        self,
+        access_token: str | None = None,
+        timeout: int = 15,
+        max_retries: int = 3,
+        backoff_base_seconds: float = 0.5,
+    ):
         self.access_token = access_token or settings.upstox_access_token
         if not self.access_token:
             raise RuntimeError("UPSTOX_ACCESS_TOKEN is not set")
         self.session = requests.Session()
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.backoff_base_seconds = backoff_base_seconds
 
     @property
     def headers(self) -> dict[str, str]:
@@ -33,15 +63,51 @@ class UpstoxREST:
             "Authorization": f"Bearer {self.access_token}",
         }
 
-    def _get(self, path: str, params: dict | None = None) -> dict:
-        response = self.session.get(
-            BASE + path,
-            headers=self.headers,
-            params=params,
-            timeout=self.timeout,
+    def _sleep_before_retry(self, attempt: int, cause: object, path: str) -> None:
+        wait = self.backoff_base_seconds * (2 ** attempt)
+        LOGGER.warning(
+            "Upstox request to %s failed (%s); retrying in %.1fs (attempt %d/%d)",
+            path, cause, wait, attempt + 1, self.max_retries,
         )
-        response.raise_for_status()
-        return response.json()
+        time.sleep(wait)
+
+    def _get(self, path: str, params: dict | None = None) -> dict:
+        """GET path, retrying transient failures with bounded exponential
+        backoff, and guaranteeing the return value is a JSON object.
+
+        Retried: connection errors, timeouts, HTTP 429, HTTP 5xx.
+        Not retried: any other 4xx (won't resolve itself), malformed/non-JSON
+        bodies (raised immediately as UpstoxAPIError).
+        """
+        attempt = 0
+        while True:
+            try:
+                response = self.session.get(
+                    BASE + path, headers=self.headers, params=params, timeout=self.timeout,
+                )
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                if attempt >= self.max_retries:
+                    raise
+                self._sleep_before_retry(attempt, exc, path)
+                attempt += 1
+                continue
+
+            if response.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries:
+                self._sleep_before_retry(attempt, response.status_code, path)
+                attempt += 1
+                continue
+
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise UpstoxAPIError(f"malformed (non-JSON) response body from {path}") from exc
+            if not isinstance(payload, dict):
+                raise UpstoxAPIError(
+                    f"unexpected response shape from {path}: expected a JSON object, "
+                    f"got {type(payload).__name__}"
+                )
+            return payload
 
     def search_instruments(
         self,
@@ -61,7 +127,8 @@ class UpstoxREST:
                 "records": min(records, 30),
             },
         )
-        return payload.get("data", [])
+        data = payload.get("data") or []
+        return data if isinstance(data, list) else []
 
     def resolve_equity(self, symbol: str) -> dict:
         symbol = symbol.upper().strip()
@@ -71,10 +138,24 @@ class UpstoxREST:
             candidates.append(alias)
 
         for candidate in candidates:
-            for row in self.search_instruments(candidate):
-                trading_symbol = str(row.get("trading_symbol", "")).upper()
-                if trading_symbol == candidate and row.get("instrument_key"):
-                    return row
+            matches = [
+                row
+                for row in self.search_instruments(candidate)
+                if str(row.get("trading_symbol", "")).upper() == candidate and row.get("instrument_key")
+            ]
+            if not matches:
+                continue
+            distinct_keys = {row["instrument_key"] for row in matches}
+            if len(distinct_keys) > 1:
+                # Same trading_symbol resolving to more than one instrument_key
+                # (e.g. mid-relisting) is exactly the silent wrong-security risk
+                # this function must never guess through -- fail loudly instead
+                # of returning "whichever the API happened to list first".
+                raise AmbiguousInstrumentError(
+                    f"{symbol} resolved to {len(distinct_keys)} distinct instrument_keys "
+                    f"via candidate {candidate!r}: {sorted(distinct_keys)}"
+                )
+            return matches[0]
 
         raise LookupError(f"NSE equity instrument not found: {symbol}")
 
@@ -101,6 +182,14 @@ class UpstoxREST:
             .reset_index(drop=True)
         )
 
+    @staticmethod
+    def _data_dict(payload: dict) -> dict:
+        """payload["data"] is expected to be an object; treat an explicit
+        null the same as a missing key rather than propagating None into a
+        caller's .get(...) chain."""
+        data = payload.get("data")
+        return data if isinstance(data, dict) else {}
+
     def intraday_candles(
         self, instrument_key: str, unit: str = "minutes", interval: int = 1
     ) -> pd.DataFrame:
@@ -108,7 +197,8 @@ class UpstoxREST:
         payload = self._get(
             f"/v3/historical-candle/intraday/{key}/{unit}/{interval}"
         )
-        return self._frame(payload.get("data", {}).get("candles", []))
+        candles = self._data_dict(payload).get("candles") or []
+        return self._frame(candles)
 
     def historical_candles(
         self,
@@ -123,7 +213,8 @@ class UpstoxREST:
         if from_date:
             path += f"/{from_date.isoformat()}"
         payload = self._get(path)
-        return self._frame(payload.get("data", {}).get("candles", []))
+        candles = self._data_dict(payload).get("candles") or []
+        return self._frame(candles)
 
     def full_market_quotes(self, instrument_keys: list[str]) -> dict:
         if not instrument_keys:
@@ -132,7 +223,7 @@ class UpstoxREST:
             "/v2/market-quote/quotes",
             {"instrument_key": ",".join(instrument_keys)},
         )
-        return payload.get("data", {})
+        return self._data_dict(payload)
 
     def news(self, instrument_keys: list[str], page_size: int = 100) -> dict:
         """Return recent Upstox news grouped by instrument key."""
@@ -149,7 +240,7 @@ class UpstoxREST:
                 "page_size": min(page_size, 100),
             },
         )
-        return payload.get("data", {})
+        return self._data_dict(payload)
 
     @staticmethod
     def quote_metrics(quotes: dict) -> dict[str, dict[str, float | None]]:

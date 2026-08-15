@@ -62,6 +62,17 @@ def _exit_price(side: str, price: float, slippage_points: float) -> float:
 
 
 def _simulate_one(signal: TradeSignal, symbol_bars: pd.DataFrame, signal_index: int, *, max_holding_bars: int, slippage_points: float) -> BacktestTrade | None:
+    """Simulate one signal with next-bar-open entry.
+
+    Conservative execution assumption, deliberately not changed by this
+    audit: OHLC bars cannot reveal whether price touched the stop or the
+    target first within a single bar. When a bar's range covers both levels,
+    this always resolves the trade as STOP (checked before TARGET below) --
+    the worse-case outcome is assumed rather than guessed at. This mirrors
+    research/paper_outcomes.py::evaluate_trade, the live paper-trading path,
+    so both simulators make the same assumption. See
+    test_stop_wins_when_stop_and_target_are_both_inside_one_bar (both sides).
+    """
     if signal_index + 1 >= len(symbol_bars) or signal.stop_loss is None or signal.target is None:
         return None
 

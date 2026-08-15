@@ -42,7 +42,7 @@ def _patch_scanner(monkeypatch, instruments, liquidity):
         lambda symbols, trading_date: pd.DataFrame({"symbol": symbols, "vwap": [100.0] * len(symbols)}),
     )
     monkeypatch.setattr("intraday_engine.scanner.service.latest_symbol_news_scores", lambda hours: pd.DataFrame())
-    monkeypatch.setattr("intraday_engine.scanner.service.latest_market_score", lambda: 0.0)
+    monkeypatch.setattr("intraday_engine.scanner.service.latest_market_score", lambda trading_date=None: 0.0)
 
 
 def test_scan_universe_returns_and_persists_all_ranked_rows(monkeypatch):

@@ -413,19 +413,35 @@ def latest_candle_timestamp(instrument_key: str, interval: str = "1m"):
         connection.close()
 
 
-def latest_market_context() -> dict | None:
+def latest_market_context(trading_date=None) -> dict | None:
+    """Most recent premarket snapshot, optionally scoped to `trading_date`.
+
+    Without the trading_date filter, "most recent by captured_at" would
+    silently return a prior day's context (e.g. yesterday's regime/score)
+    whenever today's premarket capture hasn't run yet or failed -- feeding a
+    stale macro snapshot into every signal that day with no indication
+    anything was wrong. Callers that know which trading day they're deciding
+    for should always pass it; the unscoped form is kept only for ad-hoc
+    inspection.
+    """
     connection = conn()
     try:
-        row = connection.execute(
-            "SELECT * FROM market_context ORDER BY captured_at DESC LIMIT 1"
-        ).fetchone()
+        if trading_date is not None:
+            row = connection.execute(
+                "SELECT * FROM market_context WHERE trading_date = ? ORDER BY captured_at DESC LIMIT 1",
+                [trading_date],
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM market_context ORDER BY captured_at DESC LIMIT 1"
+            ).fetchone()
         return dict(zip(MARKET_CONTEXT_COLUMNS, row)) if row is not None else None
     finally:
         connection.close()
 
 
-def latest_market_score():
-    context = latest_market_context()
+def latest_market_score(trading_date=None):
+    context = latest_market_context(trading_date)
     return float(context["score"]) if context else 0.0
 
 

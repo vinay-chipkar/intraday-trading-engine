@@ -1,10 +1,19 @@
 """Table-to-warehouse mapping and schema version for the Parquet warehouse.
 
 This is the single source of truth for how each DuckDB table maps onto the
-partitioned Parquet layout on disk (zone + partition key). Bump
-SCHEMA_VERSION whenever a table gains/loses/renames a column in
-`intraday_engine/storage/db.py`'s SCHEMA -- persist/restore both refuse to
-mix data across schema versions rather than guessing at compatibility.
+partitioned Parquet layout on disk (zone + partition key).
+
+restore.py reads a table's partitions with union_by_name=true and inserts
+BY NAME, so a table gaining a new *nullable* column (old partitions simply
+restore with NULL for it, matching what those rows actually had) does NOT
+require a SCHEMA_VERSION bump -- this was verified against real production
+partitions (paper_observations/paper_outcomes already had data persisted
+before they gained provenance columns like strategy_version).
+
+Bump SCHEMA_VERSION for anything BY NAME can't paper over: a column being
+removed, renamed, or changing type, or a table being restructured -- cases
+where "restore what's there under its old name" would be actively wrong
+rather than just incomplete.
 """
 
 from __future__ import annotations
