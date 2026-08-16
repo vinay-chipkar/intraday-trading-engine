@@ -106,15 +106,17 @@ def test_persisting_into_a_v4_warehouse_upgrades_it_to_v5(v4_warehouse):
 
 
 def test_v5_restore_after_the_upgrade_persist_matches_existing_data_exactly(v4_warehouse, tmp_path):
-    source, root = v4_warehouse
+    _, root = v4_warehouse
 
     # v4 restore (what the scheduled workflow's morning job would have done
     # before this code shipped).
     pre_upgrade_target = tmp_path / "pre_upgrade.duckdb"
     restore_warehouse(root, str(pre_upgrade_target))
 
-    # The subsequent v5 persist upgrades the warehouse in place.
-    persist_warehouse(str(source), root)
+    # The subsequent v5 persist upgrades the warehouse in place. Persist the
+    # database produced by the v4 restore, exactly as the scheduled workflow
+    # does, rather than bypassing the restore step with the original source DB.
+    persist_warehouse(str(pre_upgrade_target), root)
     assert load_schema_version(root) == {"schema_version": SCHEMA_VERSION}
 
     # A later v5 restore must still succeed and every row/value already
@@ -125,6 +127,7 @@ def test_v5_restore_after_the_upgrade_persist_matches_existing_data_exactly(v4_w
     assert counts["candles"] == 4
     assert counts["instrument_master"] == 2
     assert counts["candidate_events"] == 2
+    assert counts["instrument_master_history"] == 0
 
     pre_conn = conn(path=str(pre_upgrade_target))
     post_conn = conn(path=str(post_upgrade_target))
