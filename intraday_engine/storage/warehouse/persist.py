@@ -108,15 +108,6 @@ def persist_warehouse(source_db_path: str, root: str | Path) -> dict:
                 f"safely persist into ([{MIN_COMPATIBLE_SCHEMA_VERSION}, {SCHEMA_VERSION}])."
             )
 
-    # Record the schema version up front, not just at the end -- if this run
-    # crashes partway through, a retry (or a restore of this half-finished
-    # warehouse) must still see a versioned, self-consistent directory. This
-    # is also the upgrade step for an older-but-compatible warehouse (e.g.
-    # v4): the first successful persist after this code deploys stamps it up
-    # to SCHEMA_VERSION, since every table this version added is additive and
-    # nothing existing needed migrating.
-    save_schema_version(root, SCHEMA_VERSION)
-
     manifest = load_manifest(root)
     summary: dict = {"written": [], "skipped": [], "tables": {}}
 
@@ -177,5 +168,14 @@ def persist_warehouse(source_db_path: str, root: str | Path) -> dict:
             summary["tables"][spec.name] = table_summary
     finally:
         connection.close()
+
+    # The schema version is written only after every table/partition has been
+    # processed successfully. This is the actual v4 -> v5 upgrade point: a
+    # compatible v4 warehouse remains stamped v4 if a persist crashes partway
+    # through, so a retry can still recognize it as the old-but-compatible
+    # artifact. A completed persist stamps the warehouse v5, including the
+    # newly-known instrument_master_history table (which is empty on a restore
+    # of a genuine v4 warehouse until new mappings are observed).
+    save_schema_version(root, SCHEMA_VERSION)
 
     return summary
