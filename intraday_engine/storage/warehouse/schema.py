@@ -39,6 +39,24 @@ from dataclasses import dataclass
 # unaffected and need no migration.
 SCHEMA_VERSION = 5
 
+# The oldest on-disk schema_version that restore.py/persist.py will still
+# accept, rather than refuse outright. Every bump from this version up to
+# SCHEMA_VERSION (v4 -> v5 above) is purely additive -- a brand new,
+# previously-nonexistent table -- which restore.py already handles for any
+# table absent from an older manifest (nothing to restore, so the table is
+# simply left empty) and persist.py handles by treating a missing source
+# table as having zero partitions. Nothing in that range removed, renamed, or
+# restructured an existing table, so there is no real migration to perform:
+# an old warehouse is safe to both restore from and persist into, and gets
+# stamped up to SCHEMA_VERSION the next time persist_warehouse() writes to
+# it. This floor exists because the scheduled paper-research workflow keeps
+# a real v4 warehouse artifact around in production (see
+# schema_version_compatibility tests) -- it must survive this bump rather
+# than being rejected on the next scheduled run. Move this floor forward
+# only when a future bump genuinely breaks backward compatibility (a column
+# removal/rename/restructure), never just because time has passed.
+MIN_COMPATIBLE_SCHEMA_VERSION = 4
+
 
 @dataclass(frozen=True)
 class TableSpec:

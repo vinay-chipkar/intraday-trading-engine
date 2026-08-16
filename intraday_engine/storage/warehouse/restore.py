@@ -2,8 +2,13 @@
 
 Verification happens in two passes, both before any data is loaded:
 
-1. Schema version: the warehouse's `_schema_version.json` must exist and match
-   the code's SCHEMA_VERSION exactly.
+1. Schema version: the warehouse's `_schema_version.json` must exist and its
+   schema_version must fall within
+   [MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION] -- see schema.py for why
+   that range, rather than exact equality, is safe: every bump in it only
+   ever added a brand new table, never removed/renamed/restructured an
+   existing one. A warehouse older than the floor or newer than the code
+   knows about is rejected.
 2. Every manifest entry's file must exist and its sha256 must match what the
    manifest recorded.
 
@@ -20,7 +25,7 @@ from pathlib import Path
 
 from intraday_engine.storage.db import conn as open_connection
 from intraday_engine.storage.warehouse.manifest import load_manifest, load_schema_version, sha256_of_file
-from intraday_engine.storage.warehouse.schema import SCHEMA_VERSION, TABLE_SPECS
+from intraday_engine.storage.warehouse.schema import MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION, TABLE_SPECS
 
 
 def _ensure_all_known_tables(target_db_path: str) -> None:
@@ -85,10 +90,11 @@ def restore_warehouse(root: str | Path, target_db_path: str) -> dict[str, int]:
         raise WarehouseRestoreError(
             f"{root} has no _schema_version.json -- refusing to trust an unversioned warehouse"
         )
-    if version_info.get("schema_version") != SCHEMA_VERSION:
+    warehouse_version = version_info.get("schema_version")
+    if not isinstance(warehouse_version, int) or not (MIN_COMPATIBLE_SCHEMA_VERSION <= warehouse_version <= SCHEMA_VERSION):
         raise WarehouseRestoreError(
-            f"warehouse schema_version={version_info.get('schema_version')!r} does not match "
-            f"code schema_version={SCHEMA_VERSION}"
+            f"warehouse schema_version={warehouse_version!r} is outside the range this code "
+            f"can safely restore ([{MIN_COMPATIBLE_SCHEMA_VERSION}, {SCHEMA_VERSION}])"
         )
 
     manifest = load_manifest(root)

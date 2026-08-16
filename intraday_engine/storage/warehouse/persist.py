@@ -33,7 +33,7 @@ from intraday_engine.storage.warehouse.manifest import (
     save_schema_version,
     sha256_of_file,
 )
-from intraday_engine.storage.warehouse.schema import SCHEMA_VERSION, TABLE_SPECS
+from intraday_engine.storage.warehouse.schema import MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION, TABLE_SPECS
 
 
 class WarehouseSchemaVersionError(RuntimeError):
@@ -99,16 +99,22 @@ def persist_warehouse(source_db_path: str, root: str | Path) -> dict:
     root.mkdir(parents=True, exist_ok=True)
 
     existing_version = load_schema_version(root)
-    if existing_version is not None and existing_version.get("schema_version") != SCHEMA_VERSION:
-        raise WarehouseSchemaVersionError(
-            f"warehouse at {root} was written with schema_version="
-            f"{existing_version.get('schema_version')!r}, but the running code is at "
-            f"schema_version={SCHEMA_VERSION}. Refusing to persist into an incompatible warehouse."
-        )
+    if existing_version is not None:
+        on_disk_version = existing_version.get("schema_version")
+        if not isinstance(on_disk_version, int) or not (MIN_COMPATIBLE_SCHEMA_VERSION <= on_disk_version <= SCHEMA_VERSION):
+            raise WarehouseSchemaVersionError(
+                f"warehouse at {root} was written with schema_version={on_disk_version!r}, which "
+                f"is outside the range the running code (schema_version={SCHEMA_VERSION}) can "
+                f"safely persist into ([{MIN_COMPATIBLE_SCHEMA_VERSION}, {SCHEMA_VERSION}])."
+            )
 
     # Record the schema version up front, not just at the end -- if this run
     # crashes partway through, a retry (or a restore of this half-finished
-    # warehouse) must still see a versioned, self-consistent directory.
+    # warehouse) must still see a versioned, self-consistent directory. This
+    # is also the upgrade step for an older-but-compatible warehouse (e.g.
+    # v4): the first successful persist after this code deploys stamps it up
+    # to SCHEMA_VERSION, since every table this version added is additive and
+    # nothing existing needed migrating.
     save_schema_version(root, SCHEMA_VERSION)
 
     manifest = load_manifest(root)

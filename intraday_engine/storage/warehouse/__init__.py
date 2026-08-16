@@ -4,9 +4,10 @@ from intraday_engine.storage.warehouse.persist import (
     persist_warehouse,
 )
 from intraday_engine.storage.warehouse.restore import WarehouseRestoreError, restore_warehouse
-from intraday_engine.storage.warehouse.schema import SCHEMA_VERSION, TABLE_SPECS, TableSpec
+from intraday_engine.storage.warehouse.schema import MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION, TABLE_SPECS, TableSpec
 
 __all__ = [
+    "MIN_COMPATIBLE_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "TABLE_SPECS",
     "TableSpec",
