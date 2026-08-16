@@ -31,7 +31,31 @@ from dataclasses import dataclass
 # v4: new research_monitoring table (research/monitoring.py), an append-only
 # ledger of pipeline operational health reports (ingestion failure trends,
 # stale-tick rate, sample growth). Still no real warehouse in production yet.
-SCHEMA_VERSION = 4
+# v5: new instrument_master_history table (storage/db.py::upsert_instruments),
+# an append-only log of every symbol -> instrument_key pair ever resolved --
+# the audit trail for tracing a historical observation back to the exact
+# instrument mapping in effect when it was recorded. A genuinely new table,
+# not a column addition, so existing instrument_master partitions are
+# unaffected and need no migration.
+SCHEMA_VERSION = 5
+
+# The oldest on-disk schema_version that restore.py/persist.py will still
+# accept, rather than refuse outright. Every bump from this version up to
+# SCHEMA_VERSION (v4 -> v5 above) is purely additive -- a brand new,
+# previously-nonexistent table -- which restore.py already handles for any
+# table absent from an older manifest (nothing to restore, so the table is
+# simply left empty) and persist.py handles by treating a missing source
+# table as having zero partitions. Nothing in that range removed, renamed, or
+# restructured an existing table, so there is no real migration to perform:
+# an old warehouse is safe to both restore from and persist into, and gets
+# stamped up to SCHEMA_VERSION the next time persist_warehouse() writes to
+# it. This floor exists because the scheduled paper-research workflow keeps
+# a real v4 warehouse artifact around in production (see
+# schema_version_compatibility tests) -- it must survive this bump rather
+# than being rejected on the next scheduled run. Move this floor forward
+# only when a future bump genuinely breaks backward compatibility (a column
+# removal/rename/restructure), never just because time has passed.
+MIN_COMPATIBLE_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -50,6 +74,7 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
     TableSpec("market_context", "raw", "trading_date"),
     TableSpec("market_news", "raw", "CAST(captured_at AT TIME ZONE 'Asia/Kolkata' AS DATE)"),
     TableSpec("instrument_master", "raw", None),
+    TableSpec("instrument_master_history", "raw", None),
     # research/decision data
     TableSpec("candidate_events", "research", "trading_date"),
     TableSpec("signals", "research", "trading_date"),

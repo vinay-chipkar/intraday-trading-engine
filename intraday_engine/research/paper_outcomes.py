@@ -51,6 +51,17 @@ def evaluate_trade(
     Returns None when insufficient future bars exist yet. Entry is the next
     bar open, while stop/target remain the levels recorded with the signal.
     If stop and target are both touched inside one bar, stop wins conservatively.
+
+    mfe_points/mae_points are both non-negative excursion *magnitudes* --
+    "how many points did price move in the favorable/adverse direction from
+    entry", never negative -- matching backtest/engine.py::_simulate_trade's
+    convention exactly, so the two can be compared/aggregated directly.
+    Before execution_model_version "1.1.0" this function stored mae_points
+    as a signed value (negative for an adverse move) instead, which silently
+    disagreed with backtest's magnitude convention; that historical data is
+    left as-is (see EXECUTION_MODEL_VERSION in versioning.py) rather than
+    rewritten, and rows are stamped with the version that produced them so
+    the two conventions stay distinguishable.
     """
     if max_holding_bars < 1:
         raise ValueError("max_holding_bars must be >= 1")
@@ -91,7 +102,7 @@ def evaluate_trade(
         low = float(bar["low"])
         if side == "LONG":
             mfe = max(mfe, high - entry)
-            mae = min(mae, low - entry)
+            mae = max(mae, entry - low)
             if float(bar["open"]) <= stop:
                 exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) >= target:
@@ -104,7 +115,7 @@ def evaluate_trade(
                 continue
         else:
             mfe = max(mfe, entry - low)
-            mae = min(mae, entry - high)
+            mae = max(mae, high - entry)
             if float(bar["open"]) >= stop:
                 exit_price, outcome = float(bar["open"]), "STOP_GAP"
             elif float(bar["open"]) <= target:
@@ -166,30 +177,36 @@ def _load_pending() -> list[dict]:
     try:
         rows = connection.execute(
             """
-            SELECT observation_id, bar_time, symbol, signal_action,
+            SELECT observation_id, bar_time, symbol, instrument_key, signal_action,
                    entry_price, stop_loss, target
             FROM paper_observations
             WHERE status = 'SIGNAL_PENDING'
             ORDER BY observed_at
             """
         ).fetchall()
-        columns = ["observation_id", "bar_time", "symbol", "signal_action", "entry_price", "stop_loss", "target"]
+        columns = [
+            "observation_id", "bar_time", "symbol", "instrument_key",
+            "signal_action", "entry_price", "stop_loss", "target",
+        ]
         return [dict(zip(columns, row)) for row in rows]
     finally:
         connection.close()
 
 
-def _load_bars(symbol: str) -> pd.DataFrame:
+def _load_bars(instrument_key: str) -> pd.DataFrame:
+    """Filtered by instrument_key, not symbol -- see paper_observer.py::_load_bars
+    for why a symbol-only query risks mixing histories across a remapped
+    instrument_key (relisting/rename)."""
     connection = conn()
     try:
         return connection.execute(
             """
             SELECT timestamp, open, high, low, close, volume
             FROM candles
-            WHERE symbol = ? AND interval = '1m'
+            WHERE instrument_key = ? AND interval = '1m'
             ORDER BY timestamp
             """,
-            [symbol],
+            [instrument_key],
         ).df()
     finally:
         connection.close()
@@ -222,7 +239,7 @@ def evaluate_pending(*, max_holding_bars: int = 30) -> dict:
     outcomes: list[dict] = []
     waiting = 0
     for observation in pending:
-        result = evaluate_trade(observation, _load_bars(observation["symbol"]), max_holding_bars=max_holding_bars)
+        result = evaluate_trade(observation, _load_bars(observation["instrument_key"]), max_holding_bars=max_holding_bars)
         if result is None:
             waiting += 1
         else:

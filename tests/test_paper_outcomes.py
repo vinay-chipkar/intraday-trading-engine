@@ -33,7 +33,7 @@ def test_long_target_uses_next_bar_open_and_records_mfe_mae():
     assert result["exit_price"] == pytest.approx(103.0)
     assert result["r_multiple"] == pytest.approx(2.0 / 3.0)
     assert result["mfe_points"] == pytest.approx(3.0)
-    assert result["mae_points"] == pytest.approx(-1.0)
+    assert result["mae_points"] == pytest.approx(1.0)  # entry(101) - low(100), a non-negative magnitude
 
 
 def test_stop_wins_when_stop_and_target_are_both_touched():
@@ -58,7 +58,7 @@ def test_short_side_target_uses_next_bar_open_and_records_mfe_mae():
     assert result["exit_price"] == pytest.approx(97.0)
     assert result["r_multiple"] == pytest.approx(2.0 / 3.0)
     assert result["mfe_points"] == pytest.approx(3.0)  # entry(99) - low(96)
-    assert result["mae_points"] == pytest.approx(-1.0)  # entry(99) - high(100)
+    assert result["mae_points"] == pytest.approx(1.0)  # high(100) - entry(99), a non-negative magnitude
 
 
 def test_evaluated_outcomes_are_stamped_with_the_execution_model_version():

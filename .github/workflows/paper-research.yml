@@ -183,9 +183,11 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Incremental: partitions whose row count already matches the manifest
-      # carried over from the morning job are left untouched, so only today's
-      # data is actually written and re-checksummed.
+      # Incremental: partitions whose content checksum already matches the
+      # manifest carried over from the morning job are left untouched (row
+      # count alone can't detect a same-count content change, e.g. a revised
+      # candle -- see storage/warehouse/persist.py), so only today's actually
+      # new/changed data is written and re-checksummed.
       - name: Persist to warehouse
         run: python -m scripts.warehouse_persist --root data/warehouse --source data/trading.duckdb
 
