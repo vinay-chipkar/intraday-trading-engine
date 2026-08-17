@@ -343,3 +343,75 @@ def test_feature_snapshot_is_unaffected_by_a_candle_revision_made_after_capture(
     # the now-revised (3x close, 5x volume) candles.
     assert snapshot["close"] == pytest.approx(decision_features["close"])
     assert snapshot["trend"] == decision_features["trend"]
+
+
+def test_mixed_batch_of_captured_and_null_decision_features_does_not_crash(isolated_db):
+    """Regression test for a real production failure (2026-08-17 scheduled
+    run): DuckDB's pandas conversion of a nullable VARCHAR column returns its
+    missing marker as a bare float NaN, not None, once a batch mixes rows
+    that have decision_features with rows that don't -- and NaN is truthy in
+    Python, so the old `if decision_features:` check let it through into
+    json.loads() and crashed with "TypeError: ... not float". This only
+    reproduces with a *mixed* batch (all-NULL or all-present alone did not
+    trigger the dtype quirk), so this test processes one observation of each
+    kind in the same build_feature_snapshots_and_labels() call.
+    """
+    # Historical-style observation: no decision_features captured (NULL).
+    rows = _rising_candles("OLD", 60)
+    _insert_candles(isolated_db, "OLD", rows)
+    bars = db.conn(path=isolated_db).execute(
+        "SELECT timestamp, close FROM candles WHERE instrument_key = 'NSE_EQ|OLD' ORDER BY timestamp"
+    ).df()
+    bar_time = bars["timestamp"].iloc[30]
+    old_obs_id = _create_observation_and_outcome(isolated_db, "OLD", bar_time, float(bars["close"].iloc[30]))
+
+    # Recent-style observation: decision_features captured via the real signal path.
+    _insert_candles(isolated_db, "NEW", _rising_candles("NEW", 31))
+    new_obs_id, decision_features, new_bar_time = _create_real_observation_via_signal_path(isolated_db, "NEW")
+    _insert_candles(isolated_db, "NEW", _rising_candles("NEW", 5, start_minute=76))
+
+    evaluate_pending(max_holding_bars=30)
+
+    summary = build_feature_snapshots_and_labels()
+
+    assert summary["feature_snapshots_written"] == 2
+    assert summary["from_decision_features"] == 1
+    assert summary["from_recomputed_candles"] == 1
+    assert summary["skipped_no_candles"] == 0
+
+    connection = db.conn(path=isolated_db)
+    snapshots = connection.execute(
+        "SELECT observation_id, trend FROM feature_snapshots ORDER BY observation_id"
+    ).df()
+    labels = connection.execute("SELECT observation_id FROM training_labels").df()
+    connection.close()
+
+    assert set(snapshots["observation_id"]) == {old_obs_id, new_obs_id}
+    assert len(labels) == 2
+    new_row = snapshots[snapshots["observation_id"] == new_obs_id].iloc[0]
+    assert new_row["trend"] == decision_features["trend"]
+
+
+def test_malformed_decision_features_json_raises_instead_of_silently_falling_back(isolated_db):
+    """A non-empty but corrupted decision_features string is a genuine data
+    integrity problem (e.g. storage/serialization bug), not a "no capture
+    happened" case -- it must not be swallowed into a silent recompute
+    fallback. Only NULL/NaN/missing/non-string values should ever reach the
+    causal candle fallback; a present-but-broken string should fail loudly.
+    """
+    rows = _rising_candles("TEST", 60)
+    _insert_candles(isolated_db, "TEST", rows)
+    bars = db.conn(path=isolated_db).execute("SELECT timestamp, close FROM candles ORDER BY timestamp").df()
+    bar_time = bars["timestamp"].iloc[30]
+    obs_id = _create_observation_and_outcome(isolated_db, "TEST", bar_time, float(bars["close"].iloc[30]))
+    evaluate_pending(max_holding_bars=30)
+
+    connection = db.conn(path=isolated_db)
+    connection.execute(
+        "UPDATE paper_observations SET decision_features = ? WHERE observation_id = ?",
+        ["{not valid json", obs_id],
+    )
+    connection.close()
+
+    with pytest.raises(Exception):
+        build_feature_snapshots_and_labels()

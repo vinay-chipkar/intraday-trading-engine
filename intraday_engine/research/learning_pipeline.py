@@ -115,7 +115,23 @@ def build_feature_snapshots_and_labels(*, horizon_minutes: int = 30) -> dict:
 
     for row in pending.itertuples(index=False):
         decision_features = getattr(row, "decision_features", None)
-        if decision_features:
+        # decision_features is a nullable VARCHAR column. When a batch mixes
+        # rows that have it (recent observations) with rows that don't
+        # (historical, pre-capture observations), DuckDB's pandas conversion
+        # of that column comes back as a pandas nullable-string dtype whose
+        # missing marker surfaces as a bare float NaN through itertuples(),
+        # not None -- and NaN is truthy, so a plain `if decision_features:`
+        # check lets it through into json.loads() and crashes
+        # (TypeError: ... not float). A batch of all-NULL or all-present
+        # values does not trigger this (confirmed against DuckDB 1.5.5 /
+        # pandas 3.0.5), which is why this only surfaced in production once
+        # a real batch mixed both kinds of rows. Guard with an explicit type
+        # check instead of truthiness: only an actual non-empty string is a
+        # candidate for the captured path. A malformed-but-present string is
+        # deliberately NOT caught here -- that would hide genuine data
+        # corruption behind a silent fallback; json.loads() below is left to
+        # raise loudly for that case.
+        if isinstance(decision_features, str) and decision_features.strip():
             # Exact decision-time capture exists -- use it directly. Never
             # recompute when this is available: recomputation is an
             # independent implementation (feature_engine.py vs.
